@@ -1,0 +1,45 @@
+## Visual Studio temp folders
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+## Build results
+bin/
+obj/
+[Bb]uild/
+[Ll]og/
+
+## VS Code
+.vscode/
+
+## NuGet
+*.nupkg
+*.snupkg
+packages/
+
+## Resharper
+_ReSharper*/
+*.DotSettings.user
+
+## IIS Express
+IISExpress/
+
+## User-specific files
+*.dbmdl
+*.jfm
+
+## Temporary files
+*.tmp
+*.temp
+*.log
+*.cache
+*.pdb
+*.db
+*.opendb
+*.swp
+*~ 
+
+## Local configuration
+appsettings.*.local.json

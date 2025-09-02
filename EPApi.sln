@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36408.4 d17.14
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EPApi", "EPApi.csproj", "{BFC0572E-2B67-0601-9C64-46690F1CA223}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{BFC0572E-2B67-0601-9C64-46690F1CA223}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{BFC0572E-2B67-0601-9C64-46690F1CA223}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{BFC0572E-2B67-0601-9C64-46690F1CA223}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{BFC0572E-2B67-0601-9C64-46690F1CA223}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {095CC4EE-1B7C-4D73-BD7D-D777A0CC18BF}
+	EndGlobalSection
+EndGlobal
