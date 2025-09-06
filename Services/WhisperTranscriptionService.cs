@@ -16,9 +16,7 @@ namespace EPApi.Services
         {
             _http = http;
 
-            Console.WriteLine(cfg["OpenAI:ApiKey"]);
-            Console.WriteLine(Environment.GetEnvironmentVariable("OPENAI_API_KEY"));
-
+            
             _apiKey = cfg["OpenAI:ApiKey"] ?? Environment.GetEnvironmentVariable("OPENAI_API_KEY")
                       ?? throw new InvalidOperationException("Missing OpenAI API key");
         }

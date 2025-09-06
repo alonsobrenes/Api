@@ -9,6 +9,8 @@ using EPApi.DataAccess;
 using EPApi.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using System.Security.Claims;
+using EPApi.Services.Billing;
 
 namespace EPApi.Controllers
 {
@@ -18,7 +20,31 @@ namespace EPApi.Controllers
     public sealed class TestRunsController : ControllerBase
     {
         private readonly ITestRepository _repo;
-        public TestRunsController(ITestRepository repo) => _repo = repo;
+        private readonly IUsageService _usage;
+        private readonly BillingRepository _billing;
+        
+        public TestRunsController(ITestRepository repo, IUsageService usage, BillingRepository billing)
+        { 
+            _repo = repo;
+            _usage = usage;
+            _billing = billing;
+        }
+
+        private int RequireUserId()
+        {
+            var idStr = User.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                     ?? User.FindFirst("http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier")?.Value;
+            if (!int.TryParse(idStr, out var uid)) throw new UnauthorizedAccessException("No user id");
+            return uid;
+        }
+
+        private async Task<Guid> RequireOrgIdAsync(CancellationToken ct)
+        {
+            var uid = RequireUserId();
+            var org = await _billing.GetOrgIdForUserAsync(uid, ct);
+            if (org is null) throw new InvalidOperationException("Usuario sin organización");
+            return org.Value;
+        }
 
         [HttpPost("submit")]
         public async Task<ActionResult<TestRunSubmitResultDto>> Submit([FromBody] TestRunSubmitDto dto, CancellationToken ct)
@@ -208,6 +234,18 @@ namespace EPApi.Controllers
                     Percent = s.Percent
                 }).ToList()
             };
+
+            // 7.5) Consumo de 1 test auto del plan (si aplica a tu política)
+            {
+                var orgId = await RequireOrgIdAsync(ct);
+                //var gate = await _usage.TryConsumeAsync(orgId, "tests.auto.monthly", 1, ct);
+                var gate = await _usage.TryConsumeAsync(orgId, "tests.auto.monthly", 1,
+  $"run:{dto.TestId}:{dto.PatientId}:{dto.StartedAtUtc:O}:{dto.FinishedAtUtc:O}", ct);
+
+                if (!gate.Allowed)
+                    return Problem(statusCode: 402, title: "Límite del plan",
+                        detail: "Has alcanzado el límite mensual de Tests automáticos para tu plan.");
+            }
 
             // 8) Respuesta
             return Ok(new TestRunSubmitResultDto

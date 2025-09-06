@@ -209,17 +209,11 @@ namespace EPApi.Controllers
                 return StatusCode(503, "Servicio de IA no disponible en este entorno.");
 
             var promptVersion = body?.PromptVersion ?? "v1";
-            Console.WriteLine("ANTES");
-
             var content = await _drafts.GenerateDraftAsync(id, promptVersion, ct);
 
             
 
             await _repo.SaveDraftAsync(id, content, _cfg["OpenAI:Model"] ?? "gpt-4o-mini", promptVersion, ct);
-
-            Console.WriteLine("DESPUES");
-
-            Console.WriteLine(_cfg["OpenAI:ApiKey"]);
 
             return Ok(new { content });
         }
