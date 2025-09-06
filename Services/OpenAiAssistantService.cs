@@ -27,17 +27,12 @@ namespace EPApi.Services
             var apiKey =
                 Resolve("OpenAI:ApiKey") ??
                 Environment.GetEnvironmentVariable("OPENAI_API_KEY");
-            Console.WriteLine("OpenAI:ApiKey: " + apiKey);
             if (string.IsNullOrWhiteSpace(apiKey))
                 throw new InvalidOperationException("AI not configured: missing OpenAI API key.");
 
             var model = Resolve("OpenAI:Model") ?? "gpt-4o-mini";
             var project = Resolve("OpenAI:Project");
             var org = Resolve("OpenAI:Organization");
-
-            Console.WriteLine("model:" + model);
-            Console.WriteLine("project: " + project);
-            Console.WriteLine("org: " + org);
 
             return (apiKey, model, project, org);
         }

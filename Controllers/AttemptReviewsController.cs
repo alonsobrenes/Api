@@ -3,6 +3,8 @@ using EPApi.DataAccess;
 using EPApi.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using System.Security.Claims;
+using EPApi.Services.Billing;
 
 namespace EPApi.Controllers
 {
@@ -12,7 +14,24 @@ namespace EPApi.Controllers
     public sealed class AttemptReviewsController : ControllerBase
     {
         private readonly IClinicianReviewRepository _repo;
-        public AttemptReviewsController(IClinicianReviewRepository repo) => _repo = repo;
+        private readonly IUsageService _usage;
+        private readonly BillingRepository _billing;
+        public AttemptReviewsController(IClinicianReviewRepository repo, IUsageService usage, BillingRepository billing)
+        { _repo = repo; _usage = usage; _billing = billing; }
+
+        private int RequireUserId()
+        {
+            var idStr = User.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                     ?? User.FindFirst("http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier")?.Value;
+            if (!int.TryParse(idStr, out var uid)) throw new UnauthorizedAccessException("No user id");
+            return uid;
+        }
+        private async Task<Guid> RequireOrgIdAsync(CancellationToken ct)
+        {
+            var org = await _billing.GetOrgIdForUserAsync(RequireUserId(), ct);
+            if (org is null) throw new InvalidOperationException("Usuario sin organización");
+            return org.Value;
+        }
 
         // Crear un intento (útil al terminar el test cuando scoring_mode='clinician')
         [HttpPost]
@@ -45,7 +64,19 @@ namespace EPApi.Controllers
                     return BadRequest("value inválido (usar 0|1|2|X)");
             }
 
+            // Si marca final, consume 1 del plan SACKS
+            if (body.IsFinal)
+            {
+                var orgId = await RequireOrgIdAsync(ct);
+                //var gate = await _usage.TryConsumeAsync(orgId, "sacks.monthly", 1, ct);
+                var gate = await _usage.TryConsumeAsync(orgId, "sacks.monthly", 1,$"review-final:{attemptId}", ct);
+                if (!gate.Allowed)
+                    return Problem(statusCode: 402, title: "Límite del plan",
+                        detail: "Has alcanzado el límite mensual de SACKS para tu plan.");
+            }
+
             var id = await _repo.UpsertReviewAsync(attemptId, body, ct);
+            
             return Ok(new { attemptId, reviewId = id, isFinal = body.IsFinal });
         }
     }

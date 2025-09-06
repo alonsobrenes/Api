@@ -91,10 +91,6 @@ Notas:
             var apiKey = _cfg["OpenAI:ApiKey"] ?? Environment.GetEnvironmentVariable("OPENAI_API_KEY")
                          ?? throw new InvalidOperationException("Falta OpenAI:ApiKey");
 
-            Console.WriteLine(apiKey);
-
-            Console.WriteLine("asdkjaslkdja");
-
             var client = _http.CreateClient();
             client.BaseAddress = new Uri("https://api.openai.com/");
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);

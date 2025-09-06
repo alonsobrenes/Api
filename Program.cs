@@ -9,6 +9,7 @@ using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using EPApi.Services.Billing;
 
 var builder = WebApplication.CreateBuilder(args);
 const string CorsPolicy = "VitePolicy";
@@ -99,6 +100,10 @@ builder.Services.AddScoped<IInterviewsRepository, InterviewsRepository>();
 builder.Services.AddScoped<ITranscriptionService, WhisperTranscriptionService>();
 builder.Services.AddScoped<IInterviewDraftService, InterviewDraftService>();
 builder.Services.AddSingleton<IAiAssistantService, OpenAiAssistantService>();
+builder.Services.AddSingleton<BillingRepository>();
+builder.Services.AddSingleton<IUsageService, SqlUsageService>();
+builder.Services.AddSingleton<IBillingGateway, FakeGateway>();
+builder.Services.AddSingleton<BillingOrchestrator>();
 
 builder.Services.AddMemoryCache();
 

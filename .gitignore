@@ -41,5 +41,11 @@ IISExpress/
 *.swp
 *~ 
 
-## Local configuration
+# User secrets / locales
 appsettings.*.local.json
+*.user
+*.suo
+
+# Postman environments con secretos
+*postman_environment*.json
+

@@ -1,10 +1,11 @@
 ﻿// Controllers/ClinicianAttemptsController.cs
 using EPApi.DataAccess;
 using EPApi.Models;
+using EPApi.Services;
+using EPApi.Services.Billing;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
-using EPApi.Services;
 
 namespace EPApi.Controllers
 {
@@ -15,10 +16,57 @@ namespace EPApi.Controllers
     {
         private readonly IClinicianReviewRepository _repo;
         private readonly IAiAssistantService _ai;
+        private readonly IUsageService _usage;
+        private readonly BillingRepository _billing;
+        private readonly IHostEnvironment _env;
 
-        public ClinicianAttemptsController(IClinicianReviewRepository repo, IAiAssistantService ai) {
+        public ClinicianAttemptsController(IClinicianReviewRepository repo, IAiAssistantService ai, IUsageService usage, BillingRepository billing, IHostEnvironment env) {
             _repo = repo;
             _ai = ai;
+            _usage = usage;
+            _billing = billing;
+            _env = env;
+        }
+
+        private bool TryGetUserId(out int uid)
+        {
+            uid = 0;
+            var c = User.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                 ?? User.FindFirst("http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier")?.Value
+                 ?? User.FindFirst("sub")?.Value
+                 ?? User.FindFirst("nameid")?.Value;
+            return int.TryParse(c, out uid);
+        }
+
+        private async Task<Guid> ResolveOrgIdForDevAsync(CancellationToken ct)
+        {
+            if (TryGetUserId(out var uid))
+            {
+                var org = await _billing.GetOrgIdForUserAsync(uid, ct);
+                if (org is not null) return org.Value;
+            }
+            if (_env.IsDevelopment())
+            {
+                var dev = HttpContext.RequestServices.GetRequiredService<IConfiguration>()["Billing:DevOrgId"];
+                if (Guid.TryParse(dev, out var g)) return g;
+            }
+            throw new UnauthorizedAccessException("Auth requerida o Billing:DevOrgId en Development.");
+        }
+
+        private int RequireUserId()
+        {
+            var idStr = User.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                     ?? User.FindFirst("http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier")?.Value;
+            if (!int.TryParse(idStr, out var uid)) throw new UnauthorizedAccessException("No user id");
+            return uid;
+        }
+
+        private async Task<Guid> RequireOrgIdAsync(CancellationToken ct)
+        {
+            var uid = RequireUserId();
+            var org = await _billing.GetOrgIdForUserAsync(uid, ct);
+            if (org is null) throw new InvalidOperationException("Usuario sin organización");
+            return org.Value;
         }
 
         private int? GetCurrentUserId()
@@ -212,7 +260,16 @@ namespace EPApi.Controllers
             if (prev != null && string.Equals(prev.InputHash, inputHash, StringComparison.Ordinal))
                 return Ok(prev);
 
-            // 3) Llamar a IA (inyecta tu servicio de IA por DI: IAssistantService / IOpenAIService, etc.)
+            //3 Valida que no haya consumido su cuota mensual
+            var orgId = await RequireOrgIdAsync(ct);
+            //var gate = await _usage.TryConsumeAsync(orgId, "ai.opinion.monthly", 1, ct);
+            var gate = await _usage.TryConsumeAsync(orgId, "ai.opinion.monthly", 1, $"aiopinion:{attemptId}:{inputHash}", ct);
+
+            if (!gate.Allowed)
+                return Problem(statusCode: 402, title: "Límite del plan",
+                    detail: "Has alcanzado el límite mensual de Opiniones IA para tu plan.");
+
+            // 4) Llamar a IA (inyecta tu servicio de IA por DI: IAssistantService / IOpenAIService, etc.)
             var prompt = AiOpinionPromptBuilder.Build(bundle, promptVersion);
             var ai = await _ai.GenerateOpinionAsync(prompt, modelVersion, ct);
             // ai: { Text, Json, RiskLevel(byte?) }
