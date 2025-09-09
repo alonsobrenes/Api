@@ -103,9 +103,9 @@ namespace EPApi.Controllers
         {
             var plans = new List<PlanDto>
             {
-                new("solo",   "Solo",   29m,  new []{ "200 opiniones IA/mes", "100 tests auto/mes", "20 SACKS/mes", "1 seat" }),
-                new("clinic", "Clínica", 99m,  new []{ "1000 opiniones IA/mes", "500 tests auto/mes", "100 SACKS/mes", "5 seats" }),
-                new("pro",    "Pro",    299m, new []{ "5000 opiniones IA/mes", "2000 tests auto/mes", "300 SACKS/mes", "20 seats" }),
+                new("solo",   "Solo",   29m,  new []{ "200 opiniones IA/mes", "100 tests auto/mes", "20 SACKS/mes", "1 seat", "10 Gb Almacenamiento" }),
+                new("clinic", "Clínica", 99m,  new []{ "1000 opiniones IA/mes", "500 tests auto/mes", "100 SACKS/mes", "5 seats", "50 Gb Almacenamiento" }),
+                new("pro",    "Pro",    299m, new []{ "5000 opiniones IA/mes", "2000 tests auto/mes", "300 SACKS/mes", "20 seats", "200 Gb Almacenamiento" }),
             };
             return Ok(plans);
         }
@@ -149,7 +149,7 @@ ORDER BY updated_at_utc DESC";
             }
 
             // compila entitlements reportados
-            var features = new[] { "ai.opinion.monthly", "tests.auto.monthly", "sacks.monthly" };
+            var features = new[] { "ai.opinion.monthly", "tests.auto.monthly", "sacks.monthly","storage.gb" };
             var list = new List<EntitlementDto>(features.Length);
 
             foreach (var f in features)
@@ -187,9 +187,9 @@ ORDER BY updated_at_utc DESC";
 
             var map = body.planCode.ToLowerInvariant() switch
             {
-                "solo" => new Dictionary<string, int> { ["ai.opinion.monthly"] = 200, ["tests.auto.monthly"] = 100, ["sacks.monthly"] = 20, ["seats"] = 1 },
-                "clinic" => new Dictionary<string, int> { ["ai.opinion.monthly"] = 1000, ["tests.auto.monthly"] = 500, ["sacks.monthly"] = 100, ["seats"] = 5 },
-                "pro" => new Dictionary<string, int> { ["ai.opinion.monthly"] = 5000, ["tests.auto.monthly"] = 2000, ["sacks.monthly"] = 300, ["seats"] = 20 },
+                "solo" => new Dictionary<string, int> { ["ai.opinion.monthly"] = 200, ["tests.auto.monthly"] = 100, ["sacks.monthly"] = 20, ["seats"] = 1, ["storage.gb"] = 10 },
+                "clinic" => new Dictionary<string, int> { ["ai.opinion.monthly"] = 1000, ["tests.auto.monthly"] = 500, ["sacks.monthly"] = 100, ["seats"] = 5, ["storage.gb"] = 50 },
+                "pro" => new Dictionary<string, int> { ["ai.opinion.monthly"] = 5000, ["tests.auto.monthly"] = 2000, ["sacks.monthly"] = 300, ["seats"] = 20, ["storage.gb"] = 200 },
                 _ => null
             };
             if (map is null) return BadRequest(new { message = "planCode inválido" });
@@ -355,9 +355,9 @@ ORDER BY updated_at_utc DESC";
                 var plan = (e.PlanCode ?? "").ToLowerInvariant();
                 IReadOnlyDictionary<string, int>? ent = plan switch
                 {
-                    "solo" => new Dictionary<string, int> { ["ai.opinion.monthly"] = 200, ["tests.auto.monthly"] = 100, ["sacks.monthly"] = 20, ["seats"] = 1 },
-                    "clinic" => new Dictionary<string, int> { ["ai.opinion.monthly"] = 1000, ["tests.auto.monthly"] = 500, ["sacks.monthly"] = 100, ["seats"] = 5 },
-                    "pro" => new Dictionary<string, int> { ["ai.opinion.monthly"] = 5000, ["tests.auto.monthly"] = 2000, ["sacks.monthly"] = 300, ["seats"] = 20 },
+                    "solo" => new Dictionary<string, int> { ["ai.opinion.monthly"] = 200, ["tests.auto.monthly"] = 100, ["sacks.monthly"] = 20, ["seats"] = 1, ["storage.gb"] = 10 },
+                    "clinic" => new Dictionary<string, int> { ["ai.opinion.monthly"] = 1000, ["tests.auto.monthly"] = 500, ["sacks.monthly"] = 100, ["seats"] = 5, ["storage.gb"] = 50 },
+                    "pro" => new Dictionary<string, int> { ["ai.opinion.monthly"] = 5000, ["tests.auto.monthly"] = 2000, ["sacks.monthly"] = 300, ["seats"] = 20, ["storage.gb"] = 200 },
                     _ => null
                 };
                 if (ent is null) continue; // plan desconocido: ignoramos

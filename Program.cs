@@ -1,5 +1,9 @@
 using EPApi.DataAccess;
+using EPApi.Models;
 using EPApi.Services;
+using EPApi.Services.Billing;
+using EPApi.Services.Storage;
+using EPApi.Services.Archive;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
@@ -9,7 +13,6 @@ using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using EPApi.Services.Billing;
 
 var builder = WebApplication.CreateBuilder(args);
 const string CorsPolicy = "VitePolicy";
@@ -104,6 +107,14 @@ builder.Services.AddSingleton<BillingRepository>();
 builder.Services.AddSingleton<IUsageService, SqlUsageService>();
 builder.Services.AddSingleton<IBillingGateway, FakeGateway>();
 builder.Services.AddSingleton<BillingOrchestrator>();
+builder.Services.Configure<StorageOptions>(builder.Configuration.GetSection("Storage"));
+builder.Services.Configure<StorageArchiveOptions>(builder.Configuration.GetSection("Storage:Archive"));
+
+builder.Services.AddScoped<IStorageService, LocalStorageService>();
+builder.Services.AddScoped<IArchiveService, ArchiveService>();
+builder.Services.AddHostedService<ArchiveHostedService>();
+
+
 
 builder.Services.AddMemoryCache();
 
