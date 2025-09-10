@@ -43,6 +43,7 @@ IISExpress/
 
 # User secrets / locales
 appsettings.*.local.json
+appsettings.*.json
 *.user
 *.suo
 
