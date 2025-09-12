@@ -571,7 +571,7 @@ ORDER BY d.name, c.name, s.name;";
 
             const string sql = @"
 DECLARE @hasPractices bit =
-    CASE WHEN EXISTS (SELECT 1 FROM dbo.practitioner_disciplines pd WHERE pd.user_id = @uid) THEN 1 ELSE 0 END;
+    CASE WHEN EXISTS (SELECT 1 FROM dbo.user_disciplines pd WHERE pd.user_id = @uid) THEN 1 ELSE 0 END;
 
 ;WITH T AS (
     SELECT
@@ -585,11 +585,11 @@ DECLARE @hasPractices bit =
     WHERE t.is_active = 1
       AND (@search IS NULL OR @search = '' OR t.name LIKE '%' + @search + '%' OR t.code LIKE '%' + @search + '%')
       AND (
-            @hasPractices = 0
-            OR EXISTS (
+            @hasPractices = 1
+            AND EXISTS (
                 SELECT 1
                 FROM dbo.tests_taxonomy tx
-                INNER JOIN dbo.practitioner_disciplines pd
+                INNER JOIN dbo.user_disciplines pd
                     ON pd.discipline_id = tx.discipline_id AND pd.user_id = @uid
                 WHERE tx.test_id = t.id
             )
@@ -609,11 +609,11 @@ WITH T AS (
     WHERE t.is_active = 1
       AND (@search IS NULL OR @search = '' OR t.name LIKE '%' + @search + '%' OR t.code LIKE '%' + @search + '%')
       AND (
-            @hasPractices = 0
-            OR EXISTS (
+            @hasPractices = 1
+            AND EXISTS (
                 SELECT 1
                 FROM dbo.tests_taxonomy tx
-                INNER JOIN dbo.practitioner_disciplines pd
+                INNER JOIN dbo.user_disciplines pd
                     ON pd.discipline_id = tx.discipline_id AND pd.user_id = @uid
                 WHERE tx.test_id = t.id
             )
@@ -677,7 +677,7 @@ OFFSET (@off) ROWS FETCH NEXT (@ps) ROWS ONLY;
 
             const string sql = @"
 DECLARE @hasPractices bit =
-    CASE WHEN EXISTS (SELECT 1 FROM dbo.practitioner_disciplines pd WHERE pd.user_id = @uid) THEN 1 ELSE 0 END;
+    CASE WHEN EXISTS (SELECT 1 FROM dbo.user_disciplines pd WHERE pd.user_id = @uid) THEN 1 ELSE 0 END;
 
 ;WITH T AS (
     SELECT
@@ -691,11 +691,11 @@ DECLARE @hasPractices bit =
     WHERE t.is_active = 1
       AND (@search IS NULL OR @search = '' OR t.name LIKE '%' + @search + '%' OR t.code LIKE '%' + @search + '%')
       AND (
-            @hasPractices = 0
-            OR EXISTS (
+            @hasPractices = 1
+            AND EXISTS (
                 SELECT 1
                 FROM dbo.tests_taxonomy tx
-                INNER JOIN dbo.practitioner_disciplines pd
+                INNER JOIN dbo.user_disciplines pd
                     ON pd.discipline_id = tx.discipline_id AND pd.user_id = @uid
                 WHERE tx.test_id = t.id
             )
@@ -751,11 +751,11 @@ WITH T AS (
     WHERE t.is_active = 1
       AND (@search IS NULL OR @search = '' OR t.name LIKE '%' + @search + '%' OR t.code LIKE '%' + @search + '%')
       AND (
-            @hasPractices = 0
-            OR EXISTS (
+            @hasPractices = 1
+            AND EXISTS (
                 SELECT 1
                 FROM dbo.tests_taxonomy tx
-                INNER JOIN dbo.practitioner_disciplines pd
+                INNER JOIN dbo.user_disciplines pd
                     ON pd.discipline_id = tx.discipline_id AND pd.user_id = @uid
                 WHERE tx.test_id = t.id
             )

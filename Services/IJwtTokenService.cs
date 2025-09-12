@@ -4,6 +4,6 @@ namespace EPApi.Services
 {
     public interface IJwtTokenService
     {
-        string GenerateToken(User user);
+        string GenerateToken(User user, Guid? orgId = null);
     }
 }

@@ -18,6 +18,17 @@ namespace EPApi.Controllers
             _repo = repo;
         }
 
+        [HttpGet]
+        public async Task<IActionResult> GetForMe(CancellationToken ct = default)
+        {
+            var raw = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub");
+            if (!int.TryParse(raw, out var userId)) return Unauthorized();
+
+            var items = await _repo.GetTestsForClinicianAsync(userId, ct);
+            return Ok(items);
+        }
+
+
         private bool IsAdmin()
         {
             if (User.IsInRole("Admin")) return true;

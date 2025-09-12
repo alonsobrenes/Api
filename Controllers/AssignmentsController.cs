@@ -4,6 +4,8 @@ using Microsoft.Data.SqlClient;
 using System.Data;
 using EPApi.Models;
 using System.Security.Claims;
+using EPApi.DataAccess;
+using EPApi.Services.Billing;
 
 namespace EPApi.Controllers
 {
@@ -13,9 +15,14 @@ namespace EPApi.Controllers
     public sealed class AssignmentsController : ControllerBase
     {
         private readonly string _cs;
-        public AssignmentsController(IConfiguration cfg)
+        private readonly BillingRepository _billing;
+        private readonly IUsageService _usage;
+
+        public AssignmentsController(IConfiguration cfg, BillingRepository billing, IUsageService usage)
         {
             _cs = cfg.GetConnectionString("Default") ?? throw new InvalidOperationException("Missing DefaultConnection");
+            _billing = billing;
+            _usage = usage;
         }
 
         private int GetUserId()
@@ -29,6 +36,22 @@ namespace EPApi.Controllers
         {
             if (dto.TestId == Guid.Empty || dto.PatientId == Guid.Empty)
                 return BadRequest("TestId y PatientId son obligatorios.");
+
+            var uid = GetUserId();
+            var orgId = await _billing.GetOrgIdForUserAsync(uid, ct);
+            if (orgId is null) return Unauthorized(new { message = "Usuario sin organización" });
+
+            // === Trial expirado → 402 ===
+            if (await _billing.IsTrialExpiredAsync(orgId.Value, DateTime.UtcNow, ct))
+                return StatusCode(402, new { message = "Tu período de prueba expiró. Elige un plan para continuar." });
+
+            // === Cuota mensual tests.auto.monthly ===
+            // Clave idempotente simple por test/paciente para evitar dobles consumos en reintentos.
+            var idemKey = $"testauto:{dto.TestId}:{dto.PatientId}";
+            var gate = await _usage.TryConsumeAsync(orgId.Value, "tests.auto.monthly", 1, idemKey, ct);
+            if (!gate.Allowed)
+                return StatusCode(402, new { message = "Has alcanzado el límite mensual de tests automáticos para tu plan." });
+
 
             const string sql = @"
 INSERT INTO dbo.test_assignments

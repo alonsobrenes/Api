@@ -109,10 +109,11 @@ builder.Services.AddSingleton<IBillingGateway, FakeGateway>();
 builder.Services.AddSingleton<BillingOrchestrator>();
 builder.Services.Configure<StorageOptions>(builder.Configuration.GetSection("Storage"));
 builder.Services.Configure<StorageArchiveOptions>(builder.Configuration.GetSection("Storage:Archive"));
-
+builder.Services.AddScoped<ITrialProvisioner, TrialProvisioner>();
 builder.Services.AddScoped<IStorageService, LocalStorageService>();
 builder.Services.AddScoped<IArchiveService, ArchiveService>();
 builder.Services.AddHostedService<ArchiveHostedService>();
+builder.Services.AddScoped<IRegistrationService, RegistrationService>();
 
 
 
