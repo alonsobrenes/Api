@@ -21,7 +21,7 @@ namespace EPApi.Services
             _expiry = expiry;
         }
 
-        public string GenerateToken(User user)
+        public string GenerateToken(User user, Guid? orgId = null)
         {
             var role = (user.Role ?? "viewer").ToLowerInvariant();
 
@@ -32,6 +32,9 @@ namespace EPApi.Services
                 new Claim(ClaimTypes.Role, role),
                 new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
             };
+
+            if (orgId.HasValue)
+                claims.Add(new Claim("org_id", orgId.Value.ToString()));
 
             var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_key));
             var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);

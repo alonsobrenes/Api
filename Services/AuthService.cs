@@ -7,12 +7,14 @@ namespace EPApi.Services
         private readonly IUserRepository _users;
         private readonly IPasswordHasher _hasher;
         private readonly IJwtTokenService _jwt;
+        private readonly BillingRepository _billing;
 
-        public AuthService(IUserRepository users, IPasswordHasher hasher, IJwtTokenService jwt)
+        public AuthService(IUserRepository users, IPasswordHasher hasher, IJwtTokenService jwt, BillingRepository billing)
         {
             _users = users;
             _hasher = hasher;
             _jwt = jwt;
+            _billing = billing;
         }
 
         public async Task<string?> LoginAsync(string email, string password, CancellationToken ct = default)
@@ -20,7 +22,9 @@ namespace EPApi.Services
             var user = await _users.FindByEmailAsync(email, ct);
             if (user is null) return null;
             if (!_hasher.Verify(password, user.PasswordHash)) return null;
-            return _jwt.GenerateToken(user);
+            var orgId = await _billing.GetOrgIdForUserAsync(user.Id, ct);
+
+            return _jwt.GenerateToken(user, orgId);
         }
     }
 }

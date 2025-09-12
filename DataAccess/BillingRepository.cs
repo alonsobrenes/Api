@@ -107,5 +107,51 @@ WHERE org_id=@org AND feature_code=@f AND period_start_utc=@start AND period_end
             if (o is null || o == DBNull.Value) return 0;
             return Convert.ToInt32(o);
         }
+
+        // --------------------------------------------------------------------
+        // NUEVO: lectura directa de la última suscripción (plan y ventana).
+        // --------------------------------------------------------------------
+        /// <summary>
+        /// Devuelve (plan_code, current_period_start_utc, current_period_end_utc) de la suscripción más reciente.
+        /// Si no hay suscripciones, retorna (null, null, null).
+        /// </summary>
+        public async Task<(string? planCode, DateTime? startUtc, DateTime? endUtc)> GetLatestSubscriptionAsync(
+            Guid orgId, CancellationToken ct = default)
+        {
+            const string sql = @"
+SELECT TOP (1) plan_code, current_period_start_utc, current_period_end_utc
+FROM dbo.subscriptions
+WHERE org_id = @org
+ORDER BY updated_at_utc DESC;";
+
+            await using var cn = new SqlConnection(_cs);
+            await cn.OpenAsync(ct);
+
+            await using var cmd = new SqlCommand(sql, cn);
+            cmd.Parameters.Add(new SqlParameter("@org", SqlDbType.UniqueIdentifier) { Value = orgId });
+
+            await using var rd = await cmd.ExecuteReaderAsync(ct);
+            if (await rd.ReadAsync(ct))
+            {
+                string? plan = rd.IsDBNull(0) ? null : rd.GetString(0);
+                DateTime? s = rd.IsDBNull(1) ? (DateTime?)null : rd.GetDateTime(1);
+                DateTime? e = rd.IsDBNull(2) ? (DateTime?)null : rd.GetDateTime(2);
+                return (plan, s, e);
+            }
+            return (null, null, null);
+        }
+
+        // --------------------------------------------------------------------
+        // NUEVO: helper de expiración de trial (para usar en endpoints de features).
+        // --------------------------------------------------------------------
+        /// <summary>
+        /// Retorna true si la última suscripción es plan "trial" y la fecha actual es posterior al fin del periodo.
+        /// </summary>
+        public async Task<bool> IsTrialExpiredAsync(Guid orgId, DateTime nowUtc, CancellationToken ct = default)
+        {
+            var (plan, _s, e) = await GetLatestSubscriptionAsync(orgId, ct);
+            if (!string.Equals(plan, "trial", StringComparison.OrdinalIgnoreCase)) return false;
+            return e.HasValue && nowUtc > e.Value;
+        }
     }
 }

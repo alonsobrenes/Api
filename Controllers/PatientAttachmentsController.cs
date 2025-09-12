@@ -14,6 +14,9 @@ using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 
+// NUEVO: acceso a datos de billing para chequear expiración de trial
+using EPApi.DataAccess;
+
 namespace EPApi.Controllers
 {
     [ApiController]
@@ -25,15 +28,22 @@ namespace EPApi.Controllers
         private readonly StorageOptions _options;
         private readonly string _cs;
 
+        // NUEVO: repo para leer suscripción/trial
+        private readonly BillingRepository _billingRepo;
+
         public PatientAttachmentsController(
             IStorageService storage,
             IOptions<StorageOptions> options,
-            IConfiguration cfg)
+            IConfiguration cfg,
+            // NUEVO: inyectamos el repo (ya existe en tu DI)
+            BillingRepository billingRepo
+        )
         {
             _storage = storage;
             _options = options.Value;
             _cs = cfg.GetConnectionString("Default")
                 ?? throw new InvalidOperationException("Missing Default connection string");
+            _billingRepo = billingRepo;
         }
 
         // ===== Helpers =====
@@ -134,14 +144,11 @@ WHERE p.id = @pid AND m.org_id = @org;";
             var userId = GetCurrentUserId();
             if (userId is null) return Forbid();
 
-            //var orgId = await ResolveOrgIdAsync(userId.Value, ct);
+            // En List estás usando OrgResolver centralizado; respetamos eso
             var orgId = Shared.OrgResolver.GetOrgIdOrThrow(Request, User);
 
-            //if (orgId is null)
-            //    return BadRequest(new { message = "No se pudo resolver la organización. Envíe el encabezado X-Org-Id o agregue el claim org_id." });
-
             if (!await PatientBelongsToOrgAsync(patientId, orgId, ct))
-                return NotFound(new { message = "Paciente no pertenece a su organización." });
+                return NotFound(new { message = "Paciente no pertenece a su organización. " + "patientID: " + patientId.ToString() + ", orgID= " + orgId.ToString() });
 
             var items = await _storage.ListAsync(orgId, patientId, ct);
             return Ok(items);
@@ -171,6 +178,13 @@ WHERE p.id = @pid AND m.org_id = @org;";
 
             if (!await PatientBelongsToOrgAsync(patientId, orgId.Value, ct))
                 return NotFound(new { message = "Paciente no pertenece a su organización." });
+
+            // ===== NUEVO: bloquear upload si el TRIAL expiró =====
+            // Usa el helper del repositorio (idempotente, no altera nada más).
+            if (await _billingRepo.IsTrialExpiredAsync(orgId.Value, DateTime.UtcNow, ct))
+            {
+                return StatusCode(402, new { message = "Tu período de prueba expiró. Elige un plan para continuar." });
+            }
 
             await using var stream = file.OpenReadStream();
             try

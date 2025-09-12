@@ -15,12 +15,14 @@ namespace EPApi.Controllers
         private readonly IAuthService _auth;
         private readonly IUserRepository _users;
         private readonly IPasswordHasher _hasher;
+        private readonly IRegistrationService _registration;
 
-        public AuthController(IAuthService auth, IUserRepository users, IPasswordHasher hasher)
+        public AuthController(IAuthService auth, IUserRepository users, IPasswordHasher hasher, IRegistrationService registration)
         {
             _auth = auth;
             _users = users;
             _hasher = hasher;
+            _registration = registration;
         }
 
         [HttpPost("login")]
@@ -55,7 +57,12 @@ namespace EPApi.Controllers
             };
 
             var id = await _users.CreateAsync(user, ct);
-            return CreatedAtAction(nameof(Me), new { id }, new { id, email = user.Email, role = user.Role });
+
+            // Crea org + membresía + trial
+            var orgId = await _registration.CreateOrgAndMembershipAndTrialAsync(id, orgName: user.Email, ct);
+
+
+            return CreatedAtAction(nameof(Me), new { id }, new { id, email = user.Email, role = user.Role, orgId });
         }
 
         [HttpGet("me")]

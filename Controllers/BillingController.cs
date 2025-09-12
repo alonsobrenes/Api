@@ -27,6 +27,7 @@ namespace EPApi.Controllers
         private readonly IUsageService _usage;
         private readonly IBillingGateway _gateway;
         private readonly BillingOrchestrator _orchestrator;
+        private readonly ITrialProvisioner _trialProvisioner;
 
         public BillingController(
             IConfiguration cfg,
@@ -35,7 +36,8 @@ namespace EPApi.Controllers
             IUsageService usage,
             IBillingGateway gateway,
             BillingOrchestrator orchestrator,
-            ILogger<BillingController> logger)
+            ILogger<BillingController> logger,
+            ITrialProvisioner trialProvisioner  )
         {
             _cfg = cfg;
             _env = env;
@@ -44,6 +46,7 @@ namespace EPApi.Controllers
             _gateway = gateway;
             _orchestrator = orchestrator;
             _logger = logger;
+            _trialProvisioner = trialProvisioner;
         }
 
         // -----------------------------
@@ -120,6 +123,8 @@ namespace EPApi.Controllers
             if (!orgTry.ok) return Unauthorized(new { message = "Auth requerida o Billing:DevOrgId en Development." });
             var orgId = orgTry.orgId;
 
+            await _trialProvisioner.EnsureTrialAsync(orgId, ct);
+
             // período vigente (suscripción) o mes calendario (fallback)
             var (startUtc, endUtc) = await _usage.GetCurrentPeriodUtcAsync(orgId, ct);
 
@@ -148,8 +153,8 @@ ORDER BY updated_at_utc DESC";
                 }
             }
 
-            // compila entitlements reportados
-            var features = new[] { "ai.opinion.monthly", "tests.auto.monthly", "sacks.monthly","storage.gb" };
+            // compila entitlements reportados (incluye storage.gb)
+            var features = new[] { "ai.opinion.monthly", "tests.auto.monthly", "sacks.monthly", "storage.gb" };
             var list = new List<EntitlementDto>(features.Length);
 
             foreach (var f in features)
@@ -190,6 +195,8 @@ ORDER BY updated_at_utc DESC";
                 "solo" => new Dictionary<string, int> { ["ai.opinion.monthly"] = 200, ["tests.auto.monthly"] = 100, ["sacks.monthly"] = 20, ["seats"] = 1, ["storage.gb"] = 10 },
                 "clinic" => new Dictionary<string, int> { ["ai.opinion.monthly"] = 1000, ["tests.auto.monthly"] = 500, ["sacks.monthly"] = 100, ["seats"] = 5, ["storage.gb"] = 50 },
                 "pro" => new Dictionary<string, int> { ["ai.opinion.monthly"] = 5000, ["tests.auto.monthly"] = 2000, ["sacks.monthly"] = 300, ["seats"] = 20, ["storage.gb"] = 200 },
+                // === NUEVO: plan trial (para tests o activaciones manuales) ===
+                "trial" => new Dictionary<string, int> { ["ai.opinion.monthly"] = 2, ["tests.auto.monthly"] = 2, ["sacks.monthly"] = 2, ["seats"] = 1, ["storage.gb"] = 1 },
                 _ => null
             };
             if (map is null) return BadRequest(new { message = "planCode inválido" });
@@ -358,6 +365,8 @@ ORDER BY updated_at_utc DESC";
                     "solo" => new Dictionary<string, int> { ["ai.opinion.monthly"] = 200, ["tests.auto.monthly"] = 100, ["sacks.monthly"] = 20, ["seats"] = 1, ["storage.gb"] = 10 },
                     "clinic" => new Dictionary<string, int> { ["ai.opinion.monthly"] = 1000, ["tests.auto.monthly"] = 500, ["sacks.monthly"] = 100, ["seats"] = 5, ["storage.gb"] = 50 },
                     "pro" => new Dictionary<string, int> { ["ai.opinion.monthly"] = 5000, ["tests.auto.monthly"] = 2000, ["sacks.monthly"] = 300, ["seats"] = 20, ["storage.gb"] = 200 },
+                    // === NUEVO: plan trial (para compatibilidad si el gateway emite trial) ===
+                    "trial" => new Dictionary<string, int> { ["ai.opinion.monthly"] = 2, ["tests.auto.monthly"] = 2, ["sacks.monthly"] = 2, ["seats"] = 1, ["storage.gb"] = 1 },
                     _ => null
                 };
                 if (ent is null) continue; // plan desconocido: ignoramos

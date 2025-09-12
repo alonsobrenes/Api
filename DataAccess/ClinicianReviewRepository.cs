@@ -133,8 +133,8 @@ ORDER BY ISNULL(q.order_no,0), q.code;";
         {
             const string sql = @"
 DECLARE @id UNIQUEIDENTIFIER = NEWID();
-INSERT INTO dbo.test_attempts (id, test_id, patient_id, status, started_at, created_at, updated_at)
-VALUES (@id, @testId, @patientId, N'in_progress', SYSUTCDATETIME(), SYSUTCDATETIME(), SYSUTCDATETIME());
+INSERT INTO dbo.test_attempts (id, test_id, patient_id, assigned_by_user_id, status, started_at, created_at, updated_at)
+VALUES (@id, @testId, @patientId, (SELECT p.created_by_user_id FROM dbo.patients p WHERE p.id = @patientId), N'in_progress', SYSUTCDATETIME(), SYSUTCDATETIME(), SYSUTCDATETIME());
 SELECT @id AS id;";
 
             await using var con = new SqlConnection(_cs);
@@ -769,6 +769,15 @@ JOIN dbo.tests t ON t.id = a.test_id
 WHERE a.status IN (N'reviewed', N'auto_done', N'finished')
   AND COALESCE(a.completed_at, a.updated_at, a.started_at, a.created_at) >= @from
   AND COALESCE(a.completed_at, a.updated_at, a.started_at, a.created_at) <  @to
+  AND (
+        @isAdmin = 1 OR @uid IS NULL OR
+        EXISTS (
+          SELECT 1
+          FROM dbo.patients p
+          WHERE p.id = a.patient_id
+            AND p.created_by_user_id = @uid
+        )
+      )
 GROUP BY a.test_id, t.code, t.name
 ORDER BY usageCount DESC;";
 
@@ -779,6 +788,8 @@ ORDER BY usageCount DESC;";
             cmd.Parameters.AddWithValue("@from", fromUtc);
             cmd.Parameters.AddWithValue("@to", toUtc);
             cmd.Parameters.AddWithValue("@take", take);
+            cmd.Parameters.AddWithValue("@uid", (object?)clinicianUserId ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@isAdmin", isAdmin ? 1 : 0);
 
             await using var rd = await cmd.ExecuteReaderAsync(ct);
             while (await rd.ReadAsync(ct))
@@ -803,8 +814,8 @@ ORDER BY usageCount DESC;";
         {
             const string sql = @"
 DECLARE @id UNIQUEIDENTIFIER = NEWID();
-INSERT INTO dbo.test_attempts (id, test_id, patient_id, status, started_at, created_at, updated_at)
-VALUES (@id, @testId, @patientId, N'auto_done', @startedAt, SYSUTCDATETIME(), SYSUTCDATETIME());
+INSERT INTO dbo.test_attempts (id, test_id, patient_id, assigned_by_user_id, status, started_at, created_at, updated_at)
+VALUES (@id, @testId, @patientId, (SELECT p.created_by_user_id FROM dbo.patients p WHERE p.id = @patientId), N'auto_done', @startedAt, SYSUTCDATETIME(), SYSUTCDATETIME());
 SELECT @id;";
 
             await using var con = new SqlConnection(_cs);
@@ -882,14 +893,23 @@ FROM dbo.test_attempts a
 WHERE a.status IN (N'reviewed', N'auto_done', N'finished')
   AND COALESCE(a.completed_at, a.updated_at, a.started_at, a.created_at) >= @from
   AND COALESCE(a.completed_at, a.updated_at, a.started_at, a.created_at) <  @to
-  /* Si luego quieres filtrar por clínico, aquí habría que mapear GUID vs INT.
-     Por ahora, sin filtro de propietario para demo. */";
+  AND (
+       @isAdmin = 1 OR @uid IS NULL OR
+        EXISTS (
+          SELECT 1
+          FROM dbo.patients p
+          WHERE p.id = a.patient_id
+            AND p.created_by_user_id = @uid
+        )
+      );";
 
             await using var cn = new SqlConnection(_cs);
             await cn.OpenAsync(ct);
             await using var cmd = new SqlCommand(SQL, cn);
             cmd.Parameters.AddWithValue("@from", fromUtc);
             cmd.Parameters.AddWithValue("@to", toUtc);
+            cmd.Parameters.AddWithValue("@uid", (object?)clinicianUserId ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@isAdmin", isAdmin ? 1 : 0);
 
             await using var rd = await cmd.ExecuteReaderAsync(ct);
             if (await rd.ReadAsync(ct))
@@ -978,6 +998,38 @@ END";
             cmd.Parameters.Add(new SqlParameter("@risk", System.Data.SqlDbType.TinyInt) { Value = (object?)risk ?? DBNull.Value });
             await cmd.ExecuteNonQueryAsync(ct);
         }
+
+        public async Task<IReadOnlyList<TestBasicDto>> GetTestsForClinicianAsync(int userId, CancellationToken ct = default)
+        {
+            const string sql = @"
+SELECT DISTINCT t.id, t.code, t.name, t.pdf_url, t.is_active
+FROM dbo.tests t
+JOIN dbo.test_disciplines td ON td.test_id = t.id
+JOIN dbo.user_disciplines ud ON ud.discipline_id = td.discipline_id AND ud.user_id = @uid
+WHERE t.is_active = 1
+ORDER BY t.name;";
+
+            var list = new List<TestBasicDto>();
+            await using var cn = new SqlConnection(_cs);
+            await cn.OpenAsync(ct);
+            await using var cmd = new SqlCommand(sql, cn);
+            cmd.Parameters.Add(new SqlParameter("@uid", SqlDbType.Int) { Value = userId });
+
+            await using var rd = await cmd.ExecuteReaderAsync(ct);
+            while (await rd.ReadAsync(ct))
+            {
+                list.Add(new TestBasicDto
+                {
+                    Id = rd.GetGuid(0),
+                    Code = rd.GetString(1),
+                    Name = rd.GetString(2),
+                    PdfUrl = rd.IsDBNull(3) ? null : rd.GetString(3),
+                    IsActive = !rd.IsDBNull(4) && rd.GetBoolean(4)
+                });
+            }
+            return list;
+        }
+
 
         public async Task<AttemptAiBundle?> GetAttemptBundleForAiAsync(Guid attemptId, CancellationToken ct = default)
         {

@@ -10,6 +10,7 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Security.Claims;
 
 namespace EPApi.Controllers
 {
@@ -24,6 +25,7 @@ namespace EPApi.Controllers
         private readonly IConfiguration _cfg;
         private readonly IMemoryCache _cache;
         private readonly IInterviewDraftService? _drafts;
+        private readonly BillingRepository _billing;
 
         public ClinicianInterviewsController(
             IInterviewsRepository repo,
@@ -31,7 +33,8 @@ namespace EPApi.Controllers
             IWebHostEnvironment env,
             IConfiguration cfg,
             IMemoryCache cache,
-            IInterviewDraftService? drafts = null // opcional para que compile aunque no esté registrado aún
+            IInterviewDraftService? drafts = null, // opcional para que compile aunque no esté registrado aún
+            BillingRepository? billing = null
         )
         {
             _repo = repo;
@@ -40,16 +43,41 @@ namespace EPApi.Controllers
             _cfg = cfg;
             _cache = cache;
             _drafts = drafts;
+            _billing = billing ?? HttpContext?.RequestServices?.GetService<BillingRepository>()
+                        ?? throw new InvalidOperationException("BillingRepository no disponible en DI.");
         }
 
         // Crea una entrevista vacía y devuelve su Id
         public sealed record CreateInterviewRequest(Guid PatientId);
+
+        private int RequireUserId()
+        {
+            var raw = User.FindFirstValue("uid")
+                    ?? User.FindFirstValue(ClaimTypes.NameIdentifier)
+                    ?? User.FindFirstValue("sub");
+            if (int.TryParse(raw, out var id)) return id;
+            throw new UnauthorizedAccessException("No user id");
+        }
+
+        private async Task<Guid> RequireOrgIdAsync(CancellationToken ct)
+        {
+            var uid = RequireUserId();
+            var org = await _billing.GetOrgIdForUserAsync(uid, ct);
+            if (org is null) throw new InvalidOperationException("Usuario sin organización");
+            return org.Value;
+        }
+
 
         [HttpPost] // POST /api/clinician/interviews
         public async Task<IActionResult> Create([FromBody] CreateInterviewRequest body, CancellationToken ct)
         {
             if (body is null || body.PatientId == Guid.Empty)
                 return BadRequest("Falta patientId.");
+
+            // === Trial expirado → 402 (igual patrón que en otros endpoints)
+            var orgId = await RequireOrgIdAsync(ct);
+            if (await _billing.IsTrialExpiredAsync(orgId, DateTime.UtcNow, ct))
+                return StatusCode(402, new { message = "Tu período de prueba expiró. Elige un plan para continuar." });
 
             var id = await _repo.CreateInterviewAsync(body.PatientId, ct);
             // Opcional: estado inicial
@@ -67,6 +95,11 @@ namespace EPApi.Controllers
         public async Task<IActionResult> UploadAudio(Guid id, [FromForm] Microsoft.AspNetCore.Http.IFormFile file, CancellationToken ct)
         {
             if (file == null || file.Length == 0) return BadRequest("Archivo vacío.");
+
+            // === Trial expirado → 402 (igual patrón que en otros endpoints)
+            var orgId = await RequireOrgIdAsync(ct);
+            if (await _billing.IsTrialExpiredAsync(orgId, DateTime.UtcNow, ct))
+                return StatusCode(402, new { message = "Tu período de prueba expiró. Elige un plan para continuar." });
 
             var ctLower = (file.ContentType ?? "").ToLowerInvariant();
             var isAudio =
@@ -129,6 +162,11 @@ namespace EPApi.Controllers
             // cooldown 20s (solo si no se fuerza)
             if (!force && !TryAcquireTranscribeCooldown(id, 20, out var _))
                 return StatusCode(429, new { message = "Operación en enfriamiento.", retryAfterSec = 20 });
+
+            // === Trial expirado → 402 (igual patrón que en otros endpoints)
+            var orgId = await RequireOrgIdAsync(ct);
+            if (await _billing.IsTrialExpiredAsync(orgId, DateTime.UtcNow, ct))
+                return StatusCode(402, new { message = "Tu período de prueba expiró. Elige un plan para continuar." });
 
             try
             {
@@ -208,6 +246,11 @@ namespace EPApi.Controllers
             if (_drafts is null)
                 return StatusCode(503, "Servicio de IA no disponible en este entorno.");
 
+            // === Trial expirado → 402 (igual patrón que en otros endpoints)
+            var orgId = await RequireOrgIdAsync(ct);
+            if (await _billing.IsTrialExpiredAsync(orgId, DateTime.UtcNow, ct))
+                return StatusCode(402, new { message = "Tu período de prueba expiró. Elige un plan para continuar." });
+
             var promptVersion = body?.PromptVersion ?? "v1";
             var content = await _drafts.GenerateDraftAsync(id, promptVersion, ct);
 
@@ -263,6 +306,11 @@ namespace EPApi.Controllers
             if (body is null || string.IsNullOrWhiteSpace(body.Content))
                 return BadRequest("Contenido vacío.");
 
+            // === Trial expirado → 402 (igual patrón que en otros endpoints)
+            var orgId = await RequireOrgIdAsync(ct);
+            if (await _billing.IsTrialExpiredAsync(orgId, DateTime.UtcNow, ct))
+                return StatusCode(402, new { message = "Tu período de prueba expiró. Elige un plan para continuar." });
+
             await _repo.SaveDraftAsync(id, body.Content, body.Model, body.PromptVersion, ct);
             return Ok(new { saved = true });
         }
@@ -273,6 +321,10 @@ namespace EPApi.Controllers
         [HttpPut("{id:guid}/transcript")]
         public async Task<IActionResult> SaveTranscript(Guid id, [FromBody] SaveTranscriptRequest body, CancellationToken ct)
         {
+            var orgId = await RequireOrgIdAsync(ct);
+            if (await _billing.IsTrialExpiredAsync(orgId, DateTime.UtcNow, ct))
+                return StatusCode(402, new { message = "Tu período de prueba expiró. Elige un plan para continuar." });
+
             var lang = string.IsNullOrWhiteSpace(body?.Language) ? "es" : body!.Language!;
             var text = body?.Text ?? string.Empty;
             await _repo.SaveTranscriptAsync(id, lang, text, body?.WordsJson, ct);
@@ -286,6 +338,10 @@ namespace EPApi.Controllers
         [HttpPut("{id:guid}/clinician-diagnosis")]
         public async Task<IActionResult> SaveClinicianDiagnosis(Guid id, [FromBody] SaveClinicianDiagnosisRequest body, CancellationToken ct)
         {
+            var orgId = await RequireOrgIdAsync(ct);
+            if (await _billing.IsTrialExpiredAsync(orgId, DateTime.UtcNow, ct))
+                return StatusCode(402, new { message = "Tu período de prueba expiró. Elige un plan para continuar." });
+
             await _repo.UpdateClinicianDiagnosisAsync(id, body?.Text ?? string.Empty, body?.Close == true, ct);
             return Ok(new { saved = true, closed = body?.Close == true });
         }
@@ -297,7 +353,7 @@ namespace EPApi.Controllers
         public async Task<IActionResult> GetFirstByPatient(Guid patientId, CancellationToken ct)
         {
             var dto = await _repo.GetFirstInterviewByPatientAsync(patientId, ct);
-            if (dto is null) return NotFound();
+            //if (dto is null) return NotFound();
             return Ok(dto);
         }
 

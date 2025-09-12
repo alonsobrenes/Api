@@ -46,6 +46,7 @@ namespace EPApi.DataAccess
         Task<AiOpinionDto?> GetAiOpinionByAttemptAsync(Guid attemptId, CancellationToken ct = default);
 
         Task<AttemptAiBundle?> GetAttemptBundleForAiAsync(Guid attemptId, CancellationToken ct);
+        Task<IReadOnlyList<TestBasicDto>> GetTestsForClinicianAsync(int userId, CancellationToken ct = default);
 
 
     }

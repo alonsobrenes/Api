@@ -262,6 +262,11 @@ namespace EPApi.Controllers
 
             //3 Valida que no haya consumido su cuota mensual
             var orgId = await RequireOrgIdAsync(ct);
+
+            if (await _billing.IsTrialExpiredAsync(orgId, DateTime.UtcNow, ct))
+                return Problem(statusCode: 402, title: "Período de prueba",
+                    detail: "Tu período de prueba expiró. Elige un plan para continuar.");
+
             //var gate = await _usage.TryConsumeAsync(orgId, "ai.opinion.monthly", 1, ct);
             var gate = await _usage.TryConsumeAsync(orgId, "ai.opinion.monthly", 1, $"aiopinion:{attemptId}:{inputHash}", ct);
 
