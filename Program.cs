@@ -13,6 +13,7 @@ using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using EPApi.Services.Search;
 
 var builder = WebApplication.CreateBuilder(args);
 const string CorsPolicy = "VitePolicy";
@@ -114,6 +115,13 @@ builder.Services.AddScoped<IStorageService, LocalStorageService>();
 builder.Services.AddScoped<IArchiveService, ArchiveService>();
 builder.Services.AddHostedService<ArchiveHostedService>();
 builder.Services.AddScoped<IRegistrationService, RegistrationService>();
+builder.Services.AddScoped<LabelsRepository>();
+builder.Services.AddScoped<LabelAssignmentsRepository>();
+builder.Services.AddScoped<HashtagsRepository>();
+builder.Services.AddScoped<IHashtagService, HashtagService>();
+builder.Services.AddScoped<IPatientSessionsRepository, PatientSessionsRepository>();
+builder.Services.AddScoped<ISearchService, SearchService>();
+
 
 
 

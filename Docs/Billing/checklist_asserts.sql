@@ -66,7 +66,7 @@ END
 -- (Opcional) Validar set conocido de features – avisar si hay desconocidos
 ;WITH known AS (
   SELECT v FROM (VALUES
-    (N'ai.opinion.monthly'),
+    (N'ai.credits.monthly'),
     (N'tests.auto.monthly'),
     (N'sacks.monthly'),
     (N'seats'),
@@ -86,7 +86,7 @@ IF EXISTS (SELECT 1 FROM (
   SELECT e.org_id, e.feature_code
   FROM dbo.entitlements e
   LEFT JOIN (VALUES
-    (N'ai.opinion.monthly'),
+    (N'ai.credits.monthly'),
     (N'tests.auto.monthly'),
     (N'sacks.monthly'),
     (N'seats'),

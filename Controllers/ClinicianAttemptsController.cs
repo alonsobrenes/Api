@@ -6,6 +6,8 @@ using EPApi.Services.Billing;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
+using System.Security.Cryptography;
+using static Azure.Core.HttpHeader;
 
 namespace EPApi.Controllers
 {
@@ -19,13 +21,16 @@ namespace EPApi.Controllers
         private readonly IUsageService _usage;
         private readonly BillingRepository _billing;
         private readonly IHostEnvironment _env;
+        private readonly IHashtagService _hashtag;
 
-        public ClinicianAttemptsController(IClinicianReviewRepository repo, IAiAssistantService ai, IUsageService usage, BillingRepository billing, IHostEnvironment env) {
+        public ClinicianAttemptsController(IClinicianReviewRepository repo, IAiAssistantService ai, IUsageService usage, BillingRepository billing, IHostEnvironment env, IHashtagService hashtag)
+        {
             _repo = repo;
             _ai = ai;
             _usage = usage;
             _billing = billing;
             _env = env;
+            _hashtag = hashtag;
         }
 
         private bool TryGetUserId(out int uid)
@@ -118,7 +123,10 @@ namespace EPApi.Controllers
             if (body is null || body.TestId == Guid.Empty)
                 return BadRequest(new { message = "TestId requerido" });
 
-            var res = await _repo.CreateAttemptAsync(body.TestId, body.PatientId, ct);
+            var uid = GetCurrentUserId();
+            if (uid is null) return Forbid();
+
+            var res = await _repo.CreateAttemptAsync(body.TestId, body.PatientId, uid.Value, ct);
 
             if (body.Answers is { Count: > 0 })
             {
@@ -134,8 +142,11 @@ namespace EPApi.Controllers
             if (dto == null || dto.TestId == Guid.Empty)
                 return BadRequest(new { message = "TestId es obligatorio" });
 
+            var uid = GetCurrentUserId();
+            if (uid is null) return Forbid();
+
             // Si quieres restringir por usuario actual, úsalo como en tus otros endpoints
-            var attemptId = await _repo.LogAutoAttemptAsync(dto.TestId, dto.PatientId, dto.StartedAtUtc, ct);
+            var attemptId = await _repo.LogAutoAttemptAsync(dto.TestId, dto.PatientId, dto.StartedAtUtc, uid.Value, ct);
             return Ok(new { attemptId });
         }
 
@@ -226,6 +237,10 @@ namespace EPApi.Controllers
                 ct
             );
 
+            var orgId = await RequireOrgIdAsync(ct);
+            await _hashtag.ExtractAndPersistAsync(orgId, "attempt_review", attemptId, body.OpinionText, 5, ct);
+
+
             return Ok(new { saved = true });
         }
 
@@ -267,8 +282,8 @@ namespace EPApi.Controllers
                 return Problem(statusCode: 402, title: "Período de prueba",
                     detail: "Tu período de prueba expiró. Elige un plan para continuar.");
 
-            //var gate = await _usage.TryConsumeAsync(orgId, "ai.opinion.monthly", 1, ct);
-            var gate = await _usage.TryConsumeAsync(orgId, "ai.opinion.monthly", 1, $"aiopinion:{attemptId}:{inputHash}", ct);
+            //var gate = await _usage.TryConsumeAsync(orgId, "ai.credits.monthly", 1, ct);
+            var gate = await _usage.TryConsumeAsync(orgId, "ai.credits.monthly", 1, $"aiopinion:{attemptId}:{inputHash}", ct);
 
             if (!gate.Allowed)
                 return Problem(statusCode: 402, title: "Límite del plan",
@@ -291,6 +306,8 @@ namespace EPApi.Controllers
                 ai.RiskLevel,
                 ct
             );
+
+            await _hashtag.ExtractAndPersistAsync(orgId, "attempt_review", attemptId, ai.Text, 5, ct);
 
             return Ok(new
             {

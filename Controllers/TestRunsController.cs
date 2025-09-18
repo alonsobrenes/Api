@@ -238,7 +238,7 @@ namespace EPApi.Controllers
             // 7.5) Consumo de 1 test auto del plan (si aplica a tu política)
             {
                 var orgId = await RequireOrgIdAsync(ct);
-                //var gate = await _usage.TryConsumeAsync(orgId, "tests.auto.monthly", 1, ct);
+                
                 var gate = await _usage.TryConsumeAsync(orgId, "tests.auto.monthly", 1,
   $"run:{dto.TestId}:{dto.PatientId}:{dto.StartedAtUtc:O}:{dto.FinishedAtUtc:O}", ct);
 

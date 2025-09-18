@@ -35,7 +35,7 @@ CREATE TABLE #limits (
 IF (@PlanCode = 'solo')
 BEGIN
   INSERT INTO #limits(code, limit_value) VALUES
-    ('ai.opinion.monthly', 50),
+    ('ai.credits.monthly', 50),
     ('tests.auto.monthly', 20),
     ('sacks.monthly',      5),
     ('seats',              1),
@@ -44,7 +44,7 @@ END
 ELSE IF (@PlanCode = 'clinic')
 BEGIN
   INSERT INTO #limits(code, limit_value) VALUES
-    ('ai.opinion.monthly', 200),
+    ('ai.credits.monthly', 200),
     ('tests.auto.monthly', 100),
     ('sacks.monthly',      20),
     ('seats',              5),
@@ -53,7 +53,7 @@ END
 ELSE IF (@PlanCode = 'pro')
 BEGIN
   INSERT INTO #limits(code, limit_value) VALUES
-    ('ai.opinion.monthly', 1000),
+    ('ai.credits.monthly', 1000),
     ('tests.auto.monthly', 500),
     ('sacks.monthly',      100),
     ('seats',              20),

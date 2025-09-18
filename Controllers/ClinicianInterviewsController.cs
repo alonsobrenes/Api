@@ -1,16 +1,19 @@
 ﻿using EPApi.DataAccess;
 using EPApi.Services;
+using EPApi.Services.Billing;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Identity.Client;
 using System;
 using System.IO;
 using System.Linq;
+using System.Security.Claims;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Security.Claims;
+using static Azure.Core.HttpHeader;
 
 namespace EPApi.Controllers
 {
@@ -26,15 +29,19 @@ namespace EPApi.Controllers
         private readonly IMemoryCache _cache;
         private readonly IInterviewDraftService? _drafts;
         private readonly BillingRepository _billing;
+        private readonly IHashtagService? _hashtag;
+        private readonly IUsageService _usage;
 
         public ClinicianInterviewsController(
             IInterviewsRepository repo,
             ITranscriptionService stt,
             IWebHostEnvironment env,
             IConfiguration cfg,
-            IMemoryCache cache,
-            IInterviewDraftService? drafts = null, // opcional para que compile aunque no esté registrado aún
-            BillingRepository? billing = null
+            IMemoryCache cache,            
+            BillingRepository billing,
+            IHashtagService hashtag,
+            IInterviewDraftService drafts,
+            IUsageService usage
         )
         {
             _repo = repo;
@@ -43,8 +50,9 @@ namespace EPApi.Controllers
             _cfg = cfg;
             _cache = cache;
             _drafts = drafts;
-            _billing = billing ?? HttpContext?.RequestServices?.GetService<BillingRepository>()
-                        ?? throw new InvalidOperationException("BillingRepository no disponible en DI.");
+            _billing = billing;
+            _hashtag = hashtag;
+            _usage = usage;
         }
 
         // Crea una entrevista vacía y devuelve su Id
@@ -223,6 +231,12 @@ namespace EPApi.Controllers
                 var (lang, text, wordsJson) = await _stt.TranscribeAsync(absPath!, ct);
 
                 await _repo.SaveTranscriptAsync(id, lang, text, wordsJson, ct);
+                
+                var idemKey = $"transcript-auto:{id}:{orgId}";
+                var gate = await _usage.TryConsumeAsync(orgId, "ai.credits.monthly", 1, idemKey, ct);
+                if (!gate.Allowed)
+                    return StatusCode(402, new { message = "Has alcanzado el límite mensual de créditos IA para tu plan." });
+
                 return Ok(new { language = lang, text, cached = false });
             }
             catch (RateLimitException rlex)
@@ -248,16 +262,22 @@ namespace EPApi.Controllers
 
             // === Trial expirado → 402 (igual patrón que en otros endpoints)
             var orgId = await RequireOrgIdAsync(ct);
+            var uid = RequireUserId();
+
             if (await _billing.IsTrialExpiredAsync(orgId, DateTime.UtcNow, ct))
                 return StatusCode(402, new { message = "Tu período de prueba expiró. Elige un plan para continuar." });
 
+            var idemKey = $"opinion-ia:{id}:{orgId}:{uid}";
+            var gate = await _usage.TryConsumeAsync(orgId, "ai.credits.monthly", 1, idemKey, ct);
+            if (!gate.Allowed)
+                return StatusCode(402, new { message = "Has alcanzado el límite mensual de créditos IA para tu plan." });
+
             var promptVersion = body?.PromptVersion ?? "v1";
             var content = await _drafts.GenerateDraftAsync(id, promptVersion, ct);
-
             
-
-            await _repo.SaveDraftAsync(id, content, _cfg["OpenAI:Model"] ?? "gpt-4o-mini", promptVersion, ct);
-
+            await _repo.SaveDraftAsync(id, content, uid, _cfg["OpenAI:Model"] ?? "gpt-4o-mini", promptVersion, ct);
+            await _hashtag.ExtractAndPersistAsync(orgId, "interview", id, content, 5, ct);
+            
             return Ok(new { content });
         }
 
@@ -308,10 +328,13 @@ namespace EPApi.Controllers
 
             // === Trial expirado → 402 (igual patrón que en otros endpoints)
             var orgId = await RequireOrgIdAsync(ct);
+            var uid = RequireUserId();
             if (await _billing.IsTrialExpiredAsync(orgId, DateTime.UtcNow, ct))
                 return StatusCode(402, new { message = "Tu período de prueba expiró. Elige un plan para continuar." });
 
-            await _repo.SaveDraftAsync(id, body.Content, body.Model, body.PromptVersion, ct);
+            await _repo.SaveDraftAsync(id, body.Content, uid, body.Model, body.PromptVersion, ct);
+            await _hashtag.ExtractAndPersistAsync(orgId, "interview", id, body.Content, 5, ct);
+
             return Ok(new { saved = true });
         }
 
@@ -328,6 +351,9 @@ namespace EPApi.Controllers
             var lang = string.IsNullOrWhiteSpace(body?.Language) ? "es" : body!.Language!;
             var text = body?.Text ?? string.Empty;
             await _repo.SaveTranscriptAsync(id, lang, text, body?.WordsJson, ct);
+
+            await _hashtag.ExtractAndPersistAsync(orgId, "interview_transcript", id, text, 5, ct);
+
             return Ok(new { saved = true });
         }
 
@@ -343,6 +369,7 @@ namespace EPApi.Controllers
                 return StatusCode(402, new { message = "Tu período de prueba expiró. Elige un plan para continuar." });
 
             await _repo.UpdateClinicianDiagnosisAsync(id, body?.Text ?? string.Empty, body?.Close == true, ct);
+            await _hashtag.ExtractAndPersistAsync(orgId, "interview", id, body?.Text ?? string.Empty, 5, ct);
             return Ok(new { saved = true, closed = body?.Close == true });
         }
 

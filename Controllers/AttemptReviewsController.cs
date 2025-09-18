@@ -19,6 +19,14 @@ namespace EPApi.Controllers
         public AttemptReviewsController(IClinicianReviewRepository repo, IUsageService usage, BillingRepository billing)
         { _repo = repo; _usage = usage; _billing = billing; }
 
+        private int? GetCurrentUserId()
+        {
+            var raw = User.FindFirstValue("uid")
+                   ?? User.FindFirstValue(ClaimTypes.NameIdentifier)
+                   ?? User.FindFirstValue("sub");
+            return int.TryParse(raw, out var id) ? id : (int?)null;
+        }
+
         private int RequireUserId()
         {
             var idStr = User.FindFirst(ClaimTypes.NameIdentifier)?.Value
@@ -38,7 +46,11 @@ namespace EPApi.Controllers
         public async Task<ActionResult<CreateAttemptResultDto>> Create([FromBody] CreateAttemptInputDto dto, CancellationToken ct)
         {
             if (dto == null || dto.TestId == Guid.Empty) return BadRequest("TestId requerido.");
-            var r = await _repo.CreateAttemptAsync(dto.TestId, dto.PatientId, ct);
+
+            var uid = GetCurrentUserId();
+            if (uid is null) return Forbid();
+
+            var r = await _repo.CreateAttemptAsync(dto.TestId, dto.PatientId, uid.Value, ct);
             return Ok(r);
         }
 
@@ -63,6 +75,9 @@ namespace EPApi.Controllers
                 if (v != "0" && v != "1" && v != "2" && v != "X")
                     return BadRequest("value inválido (usar 0|1|2|X)");
             }
+            body.ReviewerUserId = GetCurrentUserId().ToString();
+
+            Console.WriteLine(body.ReviewerUserId);
 
             // Si marca final, consume 1 del plan SACKS
             if (body.IsFinal)

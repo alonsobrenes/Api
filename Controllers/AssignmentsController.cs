@@ -47,10 +47,10 @@ namespace EPApi.Controllers
 
             // === Cuota mensual tests.auto.monthly ===
             // Clave idempotente simple por test/paciente para evitar dobles consumos en reintentos.
-            var idemKey = $"testauto:{dto.TestId}:{dto.PatientId}";
-            var gate = await _usage.TryConsumeAsync(orgId.Value, "tests.auto.monthly", 1, idemKey, ct);
-            if (!gate.Allowed)
-                return StatusCode(402, new { message = "Has alcanzado el límite mensual de tests automáticos para tu plan." });
+            //var idemKey = $"testauto:{dto.TestId}:{dto.PatientId}";
+            //var gate = await _usage.TryConsumeAsync(orgId.Value, "tests.auto.monthly", 1, idemKey, ct);
+            //if (!gate.Allowed)
+            //    return StatusCode(402, new { message = "Has alcanzado el límite mensual de tests automáticos para tu plan." });
 
 
             const string sql = @"

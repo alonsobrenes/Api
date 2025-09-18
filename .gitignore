@@ -50,3 +50,5 @@ appsettings.*.json
 # Postman environments con secretos
 *postman_environment*.json
 
+
+wwwroot/

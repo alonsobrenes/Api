@@ -6,7 +6,7 @@ Este documento resume los **entitlements** activos del producto y cómo se aplic
 
 ## Entitlements activos
 
-- `ai.opinion.monthly` — Límite mensual de opiniones generadas por IA.
+- `ai.credits.monthly` — Límite mensual de opiniones generadas por IA.
 - `tests.auto.monthly` — Límite mensual de tests automáticos.
 - `sacks.monthly` — Límite mensual de SACKs.
 - `seats` — Cantidad de usuarios/miembros.
@@ -18,7 +18,7 @@ Este documento resume los **entitlements** activos del producto y cómo se aplic
 
 ## Valores por plan (simulados actuales)
 
-| Plan    | ai.opinion.monthly | tests.auto.monthly | sacks.monthly | seats | storage.gb |
+| Plan    | ai.credits.monthly | tests.auto.monthly | sacks.monthly | seats | storage.gb |
 |---------|---------------------|--------------------|---------------|-------|------------|
 | solo    | 50                  | 20                 | 5             | 1     | 10         |
 | clinic  | 200                 | 100                | 20            | 5     | 50         |

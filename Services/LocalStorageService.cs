@@ -268,27 +268,31 @@ ORDER BY uploaded_at_utc DESC;";
             return list;
         }
 
-        public async Task<bool> SoftDeleteAsync(Guid fileId, int? deletedByUserId, CancellationToken ct)
+        public async Task<bool> SoftDeleteAsync(Guid fileId, Guid orgId, int? deletedByUserId, CancellationToken ct)
         {
             const string SQL = @"
-DECLARE @org uniqueidentifier, @bytes bigint, @already bit;
+DECLARE @bytes bigint, @already bit;
 
-SELECT TOP 1 @org = org_id, @bytes = byte_size, @already = CASE WHEN deleted_at_utc IS NULL THEN 0 ELSE 1 END
+-- Asegura que el file exista y pertenezca a la org del solicitante
+SELECT TOP 1
+  @bytes   = byte_size,
+  @already = CASE WHEN deleted_at_utc IS NULL THEN 0 ELSE 1 END
 FROM dbo.patient_files WITH (UPDLOCK, HOLDLOCK)
-WHERE file_id = @id;
+WHERE file_id = @id AND org_id = @org;
 
-IF @org IS NULL
-    RETURN;
+IF @bytes IS NULL
+    RETURN;  -- no existe o no es de esta org
 
 IF @already = 1
-    RETURN;
+    RETURN;  -- ya estaba borrado (idempotente)
 
 UPDATE dbo.patient_files
-SET deleted_at_utc = SYSUTCDATETIME()
-WHERE file_id = @id AND deleted_at_utc IS NULL;
+SET deleted_at_utc   = SYSUTCDATETIME(),
+    deleted_by_user_id = @uid
+WHERE file_id = @id AND org_id = @org AND deleted_at_utc IS NULL;
 
 UPDATE dbo.org_storage
-SET used_bytes = CASE WHEN used_bytes >= @bytes THEN used_bytes - @bytes ELSE 0 END,
+SET used_bytes     = CASE WHEN used_bytes >= @bytes THEN used_bytes - @bytes ELSE 0 END,
     updated_at_utc = SYSUTCDATETIME()
 WHERE org_id = @org;
 ";
@@ -299,6 +303,9 @@ WHERE org_id = @org;
             {
                 await using var cmd = new SqlCommand(SQL, cn, (SqlTransaction)tx);
                 cmd.Parameters.Add(new SqlParameter("@id", SqlDbType.UniqueIdentifier) { Value = fileId });
+                cmd.Parameters.Add(new SqlParameter("@org", SqlDbType.UniqueIdentifier) { Value = orgId });
+                cmd.Parameters.Add(new SqlParameter("@uid", SqlDbType.Int) { Value = (object?)deletedByUserId ?? DBNull.Value });
+
                 var rows = await cmd.ExecuteNonQueryAsync(ct);
                 await tx.CommitAsync(ct);
                 // If there was no matching row, rows may be 0
