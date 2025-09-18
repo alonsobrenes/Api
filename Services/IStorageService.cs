@@ -20,7 +20,8 @@ namespace EPApi.Services.Storage
         Task<IReadOnlyList<PatientFileDto>> ListAsync(
             Guid orgId, Guid patientId, CancellationToken ct);
 
-        Task<bool> SoftDeleteAsync(Guid fileId, int? deletedByUserId, CancellationToken ct);
+        //Task<bool> SoftDeleteAsync(Guid fileId, int? deletedByUserId, CancellationToken ct);
+        Task<bool> SoftDeleteAsync(Guid fileId, Guid orgId, int? deletedByUserId, CancellationToken ct);
     }
 
     public sealed record PatientFileDto(

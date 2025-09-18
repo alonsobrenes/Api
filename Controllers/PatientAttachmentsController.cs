@@ -1,21 +1,24 @@
-﻿using System;
-using System.Data;
-using System.Globalization;
-using System.IO;
-using System.Linq;
-using System.Security.Claims;
-using System.Threading;
-using System.Threading.Tasks;
+﻿// NUEVO: acceso a datos de billing para chequear expiración de trial
+using EPApi.DataAccess;
 using EPApi.Models;
+using EPApi.Services;
+using EPApi.Services.Billing;
 using EPApi.Services.Storage;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
-
-// NUEVO: acceso a datos de billing para chequear expiración de trial
-using EPApi.DataAccess;
+using System;
+using System.Data;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Net.Mail;
+using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace EPApi.Controllers
 {
@@ -26,7 +29,9 @@ namespace EPApi.Controllers
     {
         private readonly IStorageService _storage;
         private readonly StorageOptions _options;
+        private readonly IHashtagService _hashtag;
         private readonly string _cs;
+        private readonly IUsageService _usage;
 
         // NUEVO: repo para leer suscripción/trial
         private readonly BillingRepository _billingRepo;
@@ -36,7 +41,9 @@ namespace EPApi.Controllers
             IOptions<StorageOptions> options,
             IConfiguration cfg,
             // NUEVO: inyectamos el repo (ya existe en tu DI)
-            BillingRepository billingRepo
+            BillingRepository billingRepo,
+            IHashtagService hashtag,
+            IUsageService usage
         )
         {
             _storage = storage;
@@ -44,6 +51,8 @@ namespace EPApi.Controllers
             _cs = cfg.GetConnectionString("Default")
                 ?? throw new InvalidOperationException("Missing Default connection string");
             _billingRepo = billingRepo;
+            _hashtag = hashtag;
+            _usage = usage;
         }
 
         // ===== Helpers =====
@@ -171,17 +180,13 @@ WHERE p.id = @pid AND m.org_id = @org;";
             var contentType = !string.IsNullOrWhiteSpace(file.ContentType) ? file.ContentType : "application/octet-stream";
             if (!IsAllowedContentType(contentType))
                 return BadRequest(new { message = "Tipo de archivo no permitido.", contentType });
+            
+            var orgId = Shared.OrgResolver.GetOrgIdOrThrow(Request, User);
 
-            var orgId = await ResolveOrgIdAsync(userId.Value, ct);
-            if (orgId is null)
-                return BadRequest(new { message = "No se pudo resolver la organización. Envíe el encabezado X-Org-Id o agregue el claim org_id." });
-
-            if (!await PatientBelongsToOrgAsync(patientId, orgId.Value, ct))
+            if (!await PatientBelongsToOrgAsync(patientId, orgId, ct))
                 return NotFound(new { message = "Paciente no pertenece a su organización." });
 
-            // ===== NUEVO: bloquear upload si el TRIAL expiró =====
-            // Usa el helper del repositorio (idempotente, no altera nada más).
-            if (await _billingRepo.IsTrialExpiredAsync(orgId.Value, DateTime.UtcNow, ct))
+            if (await _billingRepo.IsTrialExpiredAsync(orgId, DateTime.UtcNow, ct))
             {
                 return StatusCode(402, new { message = "Tu período de prueba expiró. Elige un plan para continuar." });
             }
@@ -189,7 +194,9 @@ WHERE p.id = @pid AND m.org_id = @org;";
             await using var stream = file.OpenReadStream();
             try
             {
-                var (fileId, bytes) = await _storage.SaveAsync(orgId.Value, patientId, stream, contentType, file.FileName, comment, userId, ct);
+                var (fileId, bytes) = await _storage.SaveAsync(orgId, patientId, stream, contentType, file.FileName, comment, userId, ct);
+                await _hashtag.ExtractAndPersistAsync(orgId, "attachment", fileId, comment, 5, ct);
+                
                 return CreatedAtAction(nameof(Download), new { fileId }, new { fileId, bytes });
             }
             catch (InvalidOperationException ex) when (ex.Message.Contains("Quota exceeded", StringComparison.OrdinalIgnoreCase))
@@ -232,7 +239,10 @@ WHERE p.id = @pid AND m.org_id = @org;";
             var userId = GetCurrentUserId();
             if (userId is null) return Forbid();
 
-            var ok = await _storage.SoftDeleteAsync(fileId, userId, ct);
+               // Resolver org del request (mismo patrón que List/Upload)
+            var orgId = Shared.OrgResolver.GetOrgIdOrThrow(Request, User);
+            var ok = await _storage.SoftDeleteAsync(fileId, orgId, userId, ct);
+            
             return ok ? NoContent() : NotFound(new { message = "Archivo no encontrado o ya eliminado." });
         }
     }

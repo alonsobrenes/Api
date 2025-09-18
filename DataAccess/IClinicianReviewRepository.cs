@@ -8,7 +8,7 @@ namespace EPApi.DataAccess
     {
         Task<IReadOnlyList<ScaleWithItemsDto>> GetScalesWithItemsAsync(Guid testId, CancellationToken ct = default);
 
-        Task<CreateAttemptResultDto> CreateAttemptAsync(Guid testId, Guid? patientId, CancellationToken ct = default);
+        Task<CreateAttemptResultDto> CreateAttemptAsync(Guid testId, Guid? patientId, int assignedByUserId, CancellationToken ct = default);
 
         Task<AttemptReviewDto?> GetReviewAsync(Guid attemptId, CancellationToken ct = default);
 
@@ -25,7 +25,7 @@ namespace EPApi.DataAccess
         Task<IReadOnlyList<AttemptAnswerRow>> GetAttemptAnswersAsync(
                 Guid attemptId, int? ownerUserId, bool isAdmin, CancellationToken ct = default);
         Task UpsertAttemptAnswersAsync(Guid attemptId, IReadOnlyList<AttemptAnswerWriteDto> answers, CancellationToken ct = default);
-        Task<Guid> LogAutoAttemptAsync(Guid testId, Guid? patientId, DateTime? startedAtUtc, CancellationToken ct = default);
+        Task<Guid> LogAutoAttemptAsync(Guid testId, Guid? patientId, DateTime? startedAtUtc, int assignedByUserId, CancellationToken ct = default);
         Task<AttemptMetaDto?> GetAttemptMetaAsync(Guid attemptId, CancellationToken ct = default);
         Task FinalizeAttemptAsync(Guid attemptId, CancellationToken ct = default);
         Task<AttemptSummaryDto> GetAttemptSummaryAsync(

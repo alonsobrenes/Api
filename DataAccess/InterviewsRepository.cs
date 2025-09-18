@@ -270,7 +270,7 @@ WHERE i.id = @iid;";
 
         // ================ BORRADORES IA ================
 
-        public async Task SaveDraftAsync(Guid interviewId, string content, string? model, string? promptVersion, CancellationToken ct = default)
+        public async Task SaveDraftAsync(Guid interviewId, string content, int assignedByUserId, string? model, string? promptVersion, CancellationToken ct = default)
         {
             await using var cn = new SqlConnection(_cs);
             await cn.OpenAsync(ct);
@@ -291,23 +291,23 @@ WHERE i.id = @iid;";
             // Tabla real en tu esquema
             const string table = "dbo.interview_ai_drafts";
 
-            var hasCreatedAt = await HasColumnAsync(cn, table, "created_at_utc", ct);
-            var hasCreatedBy = await HasColumnAsync(cn, table, "created_by_user_id", ct);
+            //var hasCreatedAt = await HasColumnAsync(cn, table, "created_at_utc", ct);
+            //var hasCreatedBy = await HasColumnAsync(cn, table, "created_by_user_id", ct);
 
             // Armado dinámico para respetar columnas presentes
-            var cols = "id, interview_id, content, model, prompt_version";
-            var vals = "@id, @iid, @content, @model, @pv";
+            var cols = "id, interview_id, content, model, prompt_version,created_at_utc,created_by_user_id";
+            var vals = "@id, @iid, @content, @model, @pv, SYSUTCDATETIME(), @createdBy";
 
-            if (hasCreatedAt)
-            {
-                cols += ", created_at_utc";
-                vals += ", SYSUTCDATETIME()";
-            }
-            if (hasCreatedBy)
-            {
-                cols += ", created_by_user_id";
-                vals += ", @createdBy";
-            }
+            //if (hasCreatedAt)
+            //{
+            //    cols += ", created_at_utc";
+            //    vals += ", SYSUTCDATETIME()";
+            //}
+            //if (hasCreatedBy)
+            //{
+            //    cols += ", created_by_user_id";
+            //    vals += ", @createdBy";
+            //}
 
             var sql = $"INSERT INTO {table} ({cols}) VALUES ({vals});";
 
@@ -319,12 +319,12 @@ WHERE i.id = @iid;";
             cmd.Parameters.Add(new SqlParameter("@content", SqlDbType.NVarChar, -1) { Value = (object)content ?? DBNull.Value });
             cmd.Parameters.Add(new SqlParameter("@model", SqlDbType.NVarChar, 100) { Value = (object)model ?? DBNull.Value });
             cmd.Parameters.Add(new SqlParameter("@pv", SqlDbType.NVarChar, 50) { Value = (object)promptVersion ?? DBNull.Value });
+            cmd.Parameters.Add(new SqlParameter("@createdBy", SqlDbType.Int) { Value = assignedByUserId });
 
-            if (hasCreatedBy)
-            {
-                // Si más adelante quieres guardar el usuario real, pasa aquí ese valor desde el controller.
-                cmd.Parameters.Add(new SqlParameter("@createdBy", SqlDbType.Int) { Value = DBNull.Value });
-            }
+            //if (hasCreatedBy)
+            //{                
+            //    cmd.Parameters.Add(new SqlParameter("@createdBy", SqlDbType.Int) { Value = assignedByUserId });
+            //}
 
             await cmd.ExecuteNonQueryAsync(ct);
         }

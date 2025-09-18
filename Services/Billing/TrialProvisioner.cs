@@ -36,7 +36,7 @@ namespace EPApi.Services.Billing
             {
                 ["tests.auto.monthly"] = 2,
                 ["sacks.monthly"] = 2,
-                ["ai.opinion.monthly"] = 2,
+                ["ai.credits.monthly"] = 10,
                 ["storage.gb"] = 1,
                 ["seats"] = 1
             };

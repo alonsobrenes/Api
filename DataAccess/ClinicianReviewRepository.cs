@@ -129,12 +129,12 @@ ORDER BY ISNULL(q.order_no,0), q.code;";
 
 
         // --------- Attempt ----------
-        public async Task<CreateAttemptResultDto> CreateAttemptAsync(Guid testId, Guid? patientId, CancellationToken ct = default)
+        public async Task<CreateAttemptResultDto> CreateAttemptAsync(Guid testId, Guid? patientId, int assignedByUserId, CancellationToken ct = default)
         {
             const string sql = @"
 DECLARE @id UNIQUEIDENTIFIER = NEWID();
 INSERT INTO dbo.test_attempts (id, test_id, patient_id, assigned_by_user_id, status, started_at, created_at, updated_at)
-VALUES (@id, @testId, @patientId, (SELECT p.created_by_user_id FROM dbo.patients p WHERE p.id = @patientId), N'in_progress', SYSUTCDATETIME(), SYSUTCDATETIME(), SYSUTCDATETIME());
+VALUES (@id, @testId, @patientId, @assignedBy, N'in_progress', SYSUTCDATETIME(), SYSUTCDATETIME(), SYSUTCDATETIME());
 SELECT @id AS id;";
 
             await using var con = new SqlConnection(_cs);
@@ -142,6 +142,7 @@ SELECT @id AS id;";
             await using var cmd = new SqlCommand(sql, con);
             cmd.Parameters.AddWithValue("@testId", testId);
             cmd.Parameters.AddWithValue("@patientId", (object?)patientId ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@assignedBy", assignedByUserId);
 
             var id = (Guid)(await cmd.ExecuteScalarAsync(ct))!;
             return new CreateAttemptResultDto
@@ -271,10 +272,12 @@ ORDER BY updated_at DESC;";
                         const string ins = @"
 DECLARE @id UNIQUEIDENTIFIER = NEWID();
 INSERT INTO dbo.attempt_reviews (id, attempt_id, reviewer_user_id, is_final, created_at, updated_at)
-VALUES(@id, @at, NULL, 0, SYSUTCDATETIME(), SYSUTCDATETIME());
+VALUES(@id, @at, @reviewer_user_id, 0, SYSUTCDATETIME(), SYSUTCDATETIME());
 SELECT @id;";
                         using var insCmd = new SqlCommand(ins, con, (SqlTransaction)tx);
                         insCmd.Parameters.AddWithValue("@at", attemptId);
+                        insCmd.Parameters.AddWithValue("@reviewer_user_id", body.ReviewerUserId);
+
                         reviewId = (Guid)(await insCmd.ExecuteScalarAsync(ct))!;
                     }
                 }
@@ -810,12 +813,12 @@ ORDER BY usageCount DESC;";
 
 
 
-        public async Task<Guid> LogAutoAttemptAsync(Guid testId, Guid? patientId, DateTime? startedAtUtc, CancellationToken ct = default)
+        public async Task<Guid> LogAutoAttemptAsync(Guid testId, Guid? patientId, DateTime? startedAtUtc, int assignedByUserId, CancellationToken ct = default)
         {
             const string sql = @"
 DECLARE @id UNIQUEIDENTIFIER = NEWID();
 INSERT INTO dbo.test_attempts (id, test_id, patient_id, assigned_by_user_id, status, started_at, created_at, updated_at)
-VALUES (@id, @testId, @patientId, (SELECT p.created_by_user_id FROM dbo.patients p WHERE p.id = @patientId), N'auto_done', @startedAt, SYSUTCDATETIME(), SYSUTCDATETIME());
+VALUES (@id, @testId, @patientId, @assignedBy, N'auto_done', @startedAt, SYSUTCDATETIME(), SYSUTCDATETIME());
 SELECT @id;";
 
             await using var con = new SqlConnection(_cs);
@@ -823,6 +826,7 @@ SELECT @id;";
             await using var cmd = new SqlCommand(sql, con);
             cmd.Parameters.AddWithValue("@testId", testId);
             cmd.Parameters.AddWithValue("@patientId", (object?)patientId ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@assignedBy", assignedByUserId);
             cmd.Parameters.AddWithValue("@startedAt", (object?)(startedAtUtc ?? DateTime.UtcNow) ?? DBNull.Value);
 
             var id = (Guid)(await cmd.ExecuteScalarAsync(ct))!;

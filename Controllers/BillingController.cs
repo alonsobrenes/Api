@@ -154,7 +154,7 @@ ORDER BY updated_at_utc DESC";
             }
 
             // compila entitlements reportados (incluye storage.gb)
-            var features = new[] { "ai.opinion.monthly", "tests.auto.monthly", "sacks.monthly", "storage.gb" };
+            var features = new[] { "ai.credits.monthly", "tests.auto.monthly", "sacks.monthly", "storage.gb" };
             var list = new List<EntitlementDto>(features.Length);
 
             foreach (var f in features)
@@ -192,11 +192,11 @@ ORDER BY updated_at_utc DESC";
 
             var map = body.planCode.ToLowerInvariant() switch
             {
-                "solo" => new Dictionary<string, int> { ["ai.opinion.monthly"] = 200, ["tests.auto.monthly"] = 100, ["sacks.monthly"] = 20, ["seats"] = 1, ["storage.gb"] = 10 },
-                "clinic" => new Dictionary<string, int> { ["ai.opinion.monthly"] = 1000, ["tests.auto.monthly"] = 500, ["sacks.monthly"] = 100, ["seats"] = 5, ["storage.gb"] = 50 },
-                "pro" => new Dictionary<string, int> { ["ai.opinion.monthly"] = 5000, ["tests.auto.monthly"] = 2000, ["sacks.monthly"] = 300, ["seats"] = 20, ["storage.gb"] = 200 },
+                "solo" => new Dictionary<string, int> { ["ai.credits.monthly"] = 200, ["tests.auto.monthly"] = 100, ["sacks.monthly"] = 20, ["seats"] = 1, ["storage.gb"] = 10 },
+                "clinic" => new Dictionary<string, int> { ["ai.credits.monthly"] = 1000, ["tests.auto.monthly"] = 500, ["sacks.monthly"] = 100, ["seats"] = 5, ["storage.gb"] = 50 },
+                "pro" => new Dictionary<string, int> { ["ai.credits.monthly"] = 5000, ["tests.auto.monthly"] = 2000, ["sacks.monthly"] = 300, ["seats"] = 20, ["storage.gb"] = 200 },
                 // === NUEVO: plan trial (para tests o activaciones manuales) ===
-                "trial" => new Dictionary<string, int> { ["ai.opinion.monthly"] = 2, ["tests.auto.monthly"] = 2, ["sacks.monthly"] = 2, ["seats"] = 1, ["storage.gb"] = 1 },
+                "trial" => new Dictionary<string, int> { ["ai.credits.monthly"] = 10, ["tests.auto.monthly"] = 2, ["sacks.monthly"] = 2, ["seats"] = 1, ["storage.gb"] = 1 },
                 _ => null
             };
             if (map is null) return BadRequest(new { message = "planCode inválido" });
@@ -362,11 +362,11 @@ ORDER BY updated_at_utc DESC";
                 var plan = (e.PlanCode ?? "").ToLowerInvariant();
                 IReadOnlyDictionary<string, int>? ent = plan switch
                 {
-                    "solo" => new Dictionary<string, int> { ["ai.opinion.monthly"] = 200, ["tests.auto.monthly"] = 100, ["sacks.monthly"] = 20, ["seats"] = 1, ["storage.gb"] = 10 },
-                    "clinic" => new Dictionary<string, int> { ["ai.opinion.monthly"] = 1000, ["tests.auto.monthly"] = 500, ["sacks.monthly"] = 100, ["seats"] = 5, ["storage.gb"] = 50 },
-                    "pro" => new Dictionary<string, int> { ["ai.opinion.monthly"] = 5000, ["tests.auto.monthly"] = 2000, ["sacks.monthly"] = 300, ["seats"] = 20, ["storage.gb"] = 200 },
+                    "solo" => new Dictionary<string, int> { ["ai.credits.monthly"] = 200, ["tests.auto.monthly"] = 100, ["sacks.monthly"] = 20, ["seats"] = 1, ["storage.gb"] = 10 },
+                    "clinic" => new Dictionary<string, int> { ["ai.credits.monthly"] = 1000, ["tests.auto.monthly"] = 500, ["sacks.monthly"] = 100, ["seats"] = 5, ["storage.gb"] = 50 },
+                    "pro" => new Dictionary<string, int> { ["ai.credits.monthly"] = 5000, ["tests.auto.monthly"] = 2000, ["sacks.monthly"] = 300, ["seats"] = 20, ["storage.gb"] = 200 },
                     // === NUEVO: plan trial (para compatibilidad si el gateway emite trial) ===
-                    "trial" => new Dictionary<string, int> { ["ai.opinion.monthly"] = 2, ["tests.auto.monthly"] = 2, ["sacks.monthly"] = 2, ["seats"] = 1, ["storage.gb"] = 1 },
+                    "trial" => new Dictionary<string, int> { ["ai.credits.monthly"] = 10, ["tests.auto.monthly"] = 2, ["sacks.monthly"] = 2, ["seats"] = 1, ["storage.gb"] = 1 },
                     _ => null
                 };
                 if (ent is null) continue; // plan desconocido: ignoramos

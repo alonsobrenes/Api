@@ -21,7 +21,7 @@ namespace EPApi.Services
         // Paciente de la entrevista (para IA)
         Task<(Guid PatientId, string? FullName, string? Sex, DateTime? BirthDate)?> GetInterviewPatientAsync(Guid interviewId, CancellationToken ct = default);
 
-        Task SaveDraftAsync(Guid interviewId, string content, string? model, string? promptVersion, CancellationToken ct = default);
+        Task SaveDraftAsync(Guid interviewId, string content, int assignedByUserId, string? model, string? promptVersion, CancellationToken ct = default);
 
         Task UpdateClinicianDiagnosisAsync(Guid interviewId, string? text, bool close, CancellationToken ct = default);
 
