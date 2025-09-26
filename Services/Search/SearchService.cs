@@ -331,7 +331,7 @@ SELECT
   CONVERT(nvarchar(36), t.test_id)     AS [title],
   LEFT(t.any_text, 300)                AS [snippet],
   t.updated_at_utc                     AS [updatedAtUtc],
-  t.id AS [patient_id]
+  t.patient_id AS [patient_id]
 FROM (
   SELECT
     ta.id,
@@ -482,7 +482,7 @@ OFFSET @skip ROWS FETCH NEXT @take ROWS ONLY;
                 {
                     if (total == 0 && !rd.IsDBNull(rd.FieldCount - 1))
                         total = rd.GetInt64(rd.FieldCount - 1);
-                    
+
                     var dto = new SearchResultItemDto
                     {
                         Type = rd.GetString(0),
@@ -683,11 +683,11 @@ ORDER BY i.started_at_utc DESC;";
 
             return type switch
             {
-                "session" => $"/app/clinic/pacientes?openPatientId={lpid}&tab=sess&id={lid}",
+                "session" => $"/app/clinic/pacientes?openPatientId={lpid}&tab=sess&session_id={lid}",
                 "interview" => $"/app/clinic/pacientes?openPatientId={lpid}&tab=inter",
                 "patient" => $"/app/clinic/pacientes?openPatientId={lpid}&tab=datos",
-                "test" => $"/app/clinic/evaluaciones?openTestAttemptId={lpid}&id={lid}",
-                "attachment" => $"/app/clinic/pacientes?openPatientId={lpid}&tab=adj&id={lid}",
+                "test" => $"/app/clinic/pacientes?openPatientId={lpid}&tab=hist&attempt_id={lid}",
+                "attachment" => $"/app/clinic/pacientes?openPatientId={lpid}&tab=adj&attachment_id={lid}",
                 _ => null
             };
         }

@@ -42,7 +42,7 @@ namespace EPApi.DataAccess
                                WHERE p.id=@tid AND m.org_id=@org;",
                 "test" => @"SELECT 1 FROM dbo.tests t
                                WHERE t.id=@tid AND t.org_id=@org OR (@org IS NOT NULL AND NOT EXISTS(SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID('dbo.tests') AND name='org_id'));",
-                "attempt" => @"SELECT 1 FROM dbo.test_attempts a
+                "test_attempt" => @"SELECT 1 FROM dbo.test_attempts a
                                JOIN dbo.patients p ON p.id = a.patient_id
                                JOIN dbo.org_members m ON m.user_id = p.created_by_user_id
                                WHERE a.id=@tid AND m.org_id=@org;",
@@ -52,10 +52,10 @@ namespace EPApi.DataAccess
                            AND pf.org_id  = @org
                            AND pf.deleted_at_utc IS NULL;",
                 "session" => @"SELECT 1 FROM dbo.patient_sessions s
-                         WHERE s.id=@tid AND s.org_id=@org AND s.deleted_at_utc IS NULL;",
+                         WHERE s.id=@tid AND s.org_id=@org AND s.deleted_at_utc IS NULL;",                
                 _ => ""
             };
-
+           
             if (string.IsNullOrEmpty(sql)) return false;
 
             await using var cn = new SqlConnection(_cs);

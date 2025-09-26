@@ -199,12 +199,6 @@ WHERE org_id = @org AND patient_id = @patient AND id = @id AND deleted_at_utc IS
                 cmd.Parameters.Add(new SqlParameter("@id", SqlDbType.UniqueIdentifier) { Value = id });
                 cmd.Parameters.Add(new SqlParameter("@tidy", SqlDbType.NVarChar, -1) { Value = (object?)aiTidy ?? DBNull.Value });
 
-                Console.WriteLine(cmd.CommandText);
-                Console.WriteLine("orgId " + orgId);
-                Console.WriteLine("patientId " + patientId);
-                Console.WriteLine("id " + id);
-                Console.WriteLine("aiTidy " + aiTidy);
-
                 var rows = await cmd.ExecuteNonQueryAsync(ct);
                 if (rows == 0) throw new KeyNotFoundException("Session not found or deleted");
             }

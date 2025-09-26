@@ -34,6 +34,8 @@ namespace EPApi.Controllers
             var orgId = Shared.OrgResolver.GetOrgIdOrThrow(Request, User);
 
             var valid = await _repo.ValidateAsync(orgId, input.LabelId, targetType, tid, ct);
+
+
             if (!valid) return NotFound(); // etiqueta o target no existen / no pertenecen a la org
 
             await _repo.AssignAsync(orgId, input.LabelId, targetType, tid, ct);

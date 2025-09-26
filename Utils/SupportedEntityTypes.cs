@@ -7,6 +7,7 @@
         public const string Attempt = "attempt";
         public const string Attachment = "attachment";
         public const string Session = "session";
+        public const string TestAttempt = "test_attempt";
         // public const string NewType = "newtype";
 
         // Un HashSet para validaciones rápidas (O(1) lookup)
@@ -16,7 +17,8 @@
             Test,
             Attempt,
             Attachment,
-            Session
+            Session,
+            TestAttempt
             // NewType
         };
 

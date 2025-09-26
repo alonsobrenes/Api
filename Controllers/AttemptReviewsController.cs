@@ -77,8 +77,6 @@ namespace EPApi.Controllers
             }
             body.ReviewerUserId = GetCurrentUserId().ToString();
 
-            Console.WriteLine(body.ReviewerUserId);
-
             // Si marca final, consume 1 del plan SACKS
             if (body.IsFinal)
             {
