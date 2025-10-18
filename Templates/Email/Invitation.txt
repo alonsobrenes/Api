@@ -1,0 +1,6 @@
+Invitación a unirse a la organización
+
+Has sido invitado(a) a unirse a la organización {{OrgDisplay}} en Evaluación Psicológica.
+Acepta la invitación con este enlace (vence el {{ExpiresAt}}):
+
+{{AcceptUrl}}

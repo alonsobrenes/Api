@@ -12,7 +12,7 @@ public sealed class CompositeTranscriptionService : ITranscriptionService
         _fallback = fallback;
     }
 
-    public async Task<(string? language, string text, string? wordsJson)> TranscribeAsync(string absolutePath, CancellationToken ct = default)
+    public async Task<(string? language, string text, string? wordsJson, long? DurationMs)> TranscribeAsync(string absolutePath, CancellationToken ct = default)
     {
         try
         {
@@ -21,13 +21,13 @@ public sealed class CompositeTranscriptionService : ITranscriptionService
         catch (RateLimitException)
         {
             // Fallback silencioso (sin marcar en el texto)
-            var (lang, text, words) = await _fallback.TranscribeAsync(absolutePath, ct);
-            return (lang, text, words);
+            var (lang, text, words, durationMs) = await _fallback.TranscribeAsync(absolutePath, ct);
+            return (lang, text, words, durationMs);
         }
         catch (HttpRequestException ex) when (ex.Message.Contains("429"))
         {
-            var (lang, text, words) = await _fallback.TranscribeAsync(absolutePath, ct);
-            return (lang, text, words);
+            var (lang, text, words, durationMs) = await _fallback.TranscribeAsync(absolutePath, ct);
+            return (lang, text, words, durationMs);
         }
     }
 }

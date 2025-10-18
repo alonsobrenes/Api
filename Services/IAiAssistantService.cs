@@ -1,6 +1,6 @@
 ﻿namespace EPApi.Services
 {
-    public sealed record AiOpinionResult(string Text, string? Json, byte? RiskLevel);
+    public sealed record AiOpinionResult(string Text, string? Json, byte? RiskLevel, int? PromptTokens, int? CompletionTokens, int? TotalTokens);
 
     public interface IAiAssistantService
     {

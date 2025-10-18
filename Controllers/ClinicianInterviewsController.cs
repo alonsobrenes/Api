@@ -14,6 +14,7 @@ using System.Security.Claims;
 using System.Threading;
 using System.Threading.Tasks;
 using static Azure.Core.HttpHeader;
+using TagLib;
 
 namespace EPApi.Controllers
 {
@@ -87,11 +88,50 @@ namespace EPApi.Controllers
             if (await _billing.IsTrialExpiredAsync(orgId, DateTime.UtcNow, ct))
                 return StatusCode(402, new { message = "Tu período de prueba expiró. Elige un plan para continuar." });
 
-            var id = await _repo.CreateInterviewAsync(body.PatientId, ct);
+            var clinicianUserId = RequireUserId();
+            var id = await _repo.CreateInterviewAsync(body.PatientId, clinicianUserId, ct);
+            //var id = await _repo.CreateInterviewAsync(body.PatientId, ct);
             // Opcional: estado inicial
             await _repo.SetStatusAsync(id, "new", ct);
 
             return Ok(new { id });
+        }
+
+        public sealed record ListByClinicianQuery(
+            int? UserId,
+            int Page = 1,
+            int PageSize = 20,
+            string? Status = null,
+            DateTime? FromUtc = null,
+            DateTime? ToUtc = null,
+            string? Q = null
+        );
+
+        [HttpGet("by-clinician")]
+        public async Task<IActionResult> ListByClinician([FromQuery] ListByClinicianQuery q, CancellationToken ct)
+        {
+            var uid = q.UserId ?? RequireUserId();
+            var page = q.Page <= 0 ? 1 : q.Page;
+            var size = q.PageSize <= 0 ? 20 : (q.PageSize > 200 ? 200 : q.PageSize);
+
+            var (items, total) = await _repo.ListByClinicianAsync(
+                clinicianUserId: uid,
+                page: page,
+                pageSize: size,
+                status: string.IsNullOrWhiteSpace(q.Status) ? null : q.Status!.Trim(),
+                fromUtc: q.FromUtc,
+                toUtc: q.ToUtc,
+                search: string.IsNullOrWhiteSpace(q.Q) ? null : q.Q!.Trim(),
+                ct: ct
+            );
+
+            return Ok(new
+            {
+                page,
+                pageSize = size,
+                total,
+                items
+            });
         }
 
 
@@ -137,12 +177,37 @@ namespace EPApi.Controllers
 
             var fname = Guid.NewGuid().ToString("N") + ext;
             var absPath = Path.Combine(folder, fname);
+            int sizeInGigabytes = (int)Math.Ceiling(file.Length / 1024.0 / 1024.0 / 1024.0);
 
             await using (var fs = System.IO.File.Create(absPath))
                 await file.CopyToAsync(fs, ct);
 
+            long? durationMs = null;
+            try
+            {
+                using var t = TagLib.File.Create(absPath); // absPath: ruta física ya guardada
+                durationMs = (long)Math.Round(t.Properties.Duration.TotalMilliseconds);
+            }
+            catch
+            {
+                durationMs = 60000;
+            }
+
             var rel = $"/uploads/interviews/{id.ToString("N")}/{fname}";
-            await _repo.AddAudioAsync(id, rel, file.ContentType, null, ct);
+
+            var usageKey = $"stt-upload:{id}:{rel}";
+           
+            var gate = await _usage.TryConsumeAsync(orgId, "storage.gb", sizeInGigabytes, usageKey, ct);
+            if (!gate.Allowed)
+            {
+                try { System.IO.File.Delete(absPath); } catch { /* noop */ }
+
+                return Problem(statusCode: 402, title: "Límite del plan",
+                    detail: "Has alcanzado tu límite mensual de almacenamiento. Considera comprar un add-on o cambiar de plan.");
+            }
+
+            
+            await _repo.AddAudioAsync(id, rel, file.ContentType, durationMs, ct);            
             await _repo.SetStatusAsync(id, "uploaded", ct);
 
             return Ok(new { uri = rel });
@@ -228,14 +293,17 @@ namespace EPApi.Controllers
 
                 await _repo.SetStatusAsync(id, "transcribing", ct);
 
-                var (lang, text, wordsJson) = await _stt.TranscribeAsync(absPath!, ct);
+                var (lang, text, wordsJson, durationMs) = await _stt.TranscribeAsync(absPath!, ct);
 
                 await _repo.SaveTranscriptAsync(id, lang, text, wordsJson, ct);
                 
+                TimeSpan duration = TimeSpan.FromMilliseconds( (double)durationMs);
+
+                int minutes = (int)duration.TotalMinutes;
                 var idemKey = $"transcript-auto:{id}:{orgId}";
-                var gate = await _usage.TryConsumeAsync(orgId, "ai.credits.monthly", 1, idemKey, ct);
+                var gate = await _usage.TryConsumeAsync(orgId, "stt.minutes.monthly", minutes, idemKey, ct);
                 if (!gate.Allowed)
-                    return StatusCode(402, new { message = "Has alcanzado el límite mensual de créditos IA para tu plan." });
+                    return StatusCode(402, new { message = "Has alcanzado el límite mensual de minutos de Transcripción para tu plan." });
 
                 return Ok(new { language = lang, text, cached = false });
             }
@@ -267,14 +335,17 @@ namespace EPApi.Controllers
             if (await _billing.IsTrialExpiredAsync(orgId, DateTime.UtcNow, ct))
                 return StatusCode(402, new { message = "Tu período de prueba expiró. Elige un plan para continuar." });
 
+            var promptVersion = body?.PromptVersion ?? "v1";
+            var (content, promptTokens, completionTokens, totalTokens) = await _drafts.GenerateDraftAsync(id, promptVersion, ct);
+            var tokens = totalTokens ?? ((promptTokens ?? 0) + (completionTokens ?? 0));
+            tokens = Math.Max(tokens, 1);
+
             var idemKey = $"opinion-ia:{id}:{orgId}:{uid}";
-            var gate = await _usage.TryConsumeAsync(orgId, "ai.credits.monthly", 1, idemKey, ct);
+            var gate = await _usage.TryConsumeAsync(orgId, "ai.credits.monthly", tokens, idemKey, ct);
             if (!gate.Allowed)
                 return StatusCode(402, new { message = "Has alcanzado el límite mensual de créditos IA para tu plan." });
 
-            var promptVersion = body?.PromptVersion ?? "v1";
-            var content = await _drafts.GenerateDraftAsync(id, promptVersion, ct);
-            
+
             await _repo.SaveDraftAsync(id, content, uid, _cfg["OpenAI:Model"] ?? "gpt-4o-mini", promptVersion, ct);
             await _hashtag.ExtractAndPersistAsync(orgId, "interview", id, content, 5, ct);
             

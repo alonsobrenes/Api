@@ -5,7 +5,6 @@ namespace EPApi.Services
 {
     public interface ITranscriptionService
     {
-        /// <summary>Transcribe un archivo en absolutePath y devuelve (language, text, wordsJson?)</summary>
-        Task<(string? language, string text, string? wordsJson)> TranscribeAsync(string absolutePath, CancellationToken ct = default);
+        Task<(string? language, string text, string? wordsJson, long? DurationMs)> TranscribeAsync(string absolutePath, CancellationToken ct = default);
     }
 }

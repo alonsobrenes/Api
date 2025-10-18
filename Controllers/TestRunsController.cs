@@ -192,24 +192,6 @@ namespace EPApi.Controllers
             var runId = Guid.NewGuid();
             var answersJson = JsonSerializer.Serialize(dto, new JsonSerializerOptions { WriteIndented = false });
 
-            //var save = new TestRunSave
-            //{
-            //    RunId = runId,
-            //    TestId = dto.TestId,
-            //    PatientId = dto.PatientId,
-            //    AssignmentId = dto.AssignmentId,
-            //    StartedAtUtc = dto.StartedAtUtc,
-            //    FinishedAtUtc = dto.FinishedAtUtc,
-            //    AnswersJson = answersJson,
-            //    TotalRaw = total?.Raw,
-            //    TotalMin = total?.Min,
-            //    TotalMax = total?.Max,
-            //    TotalPercent = total?.Percent,
-            //    Scales = scalesOut
-            //};
-
-            //await _repo.SaveRunAsync(save, ct);
-
             var save = new TestRunSave
             {
                 RunId = runId,
@@ -239,8 +221,7 @@ namespace EPApi.Controllers
             {
                 var orgId = await RequireOrgIdAsync(ct);
 
-                var gate = await _usage.TryConsumeAsync(orgId, "tests.auto.monthly", 1,
-  $"run:{dto.TestId}:{dto.PatientId}:{dto.StartedAtUtc:O}:{dto.FinishedAtUtc:O}", ct);
+                var gate = await _usage.TryConsumeAsync(orgId, "tests.auto.monthly", 1, $"run:{dto.TestId}:{dto.PatientId}:{dto.StartedAtUtc:O}:{dto.FinishedAtUtc:O}", ct);
 
                 if (!gate.Allowed)
                     return Problem(statusCode: 402, title: "Límite del plan",
@@ -419,24 +400,6 @@ namespace EPApi.Controllers
             var runId = Guid.NewGuid();
             var answersJson = JsonSerializer.Serialize(dto, new JsonSerializerOptions { WriteIndented = false });
 
-            //var save = new TestRunSave
-            //{
-            //    RunId = runId,
-            //    TestId = dto.TestId,
-            //    PatientId = dto.PatientId,
-            //    AssignmentId = dto.AssignmentId,
-            //    StartedAtUtc = dto.StartedAtUtc,
-            //    FinishedAtUtc = dto.FinishedAtUtc,
-            //    AnswersJson = answersJson,
-            //    TotalRaw = total?.Raw,
-            //    TotalMin = total?.Min,
-            //    TotalMax = total?.Max,
-            //    TotalPercent = total?.Percent,
-            //    Scales = scalesOut
-            //};
-
-            //await _repo.SaveRunAsync(save, ct);
-
             var save = new TestRunSave
             {
                 RunId = runId,
@@ -461,18 +424,6 @@ namespace EPApi.Controllers
                     Percent = s.Percent
                 }).ToList()
             };
-
-            //          // 7.5) Consumo de 1 test auto del plan (si aplica a tu política)
-            //          {
-            //              var orgId = await RequireOrgIdAsync(ct);
-
-            //              var gate = await _usage.TryConsumeAsync(orgId, "tests.auto.monthly", 1,
-            //$"run:{dto.TestId}:{dto.PatientId}:{dto.StartedAtUtc:O}:{dto.FinishedAtUtc:O}", ct);
-
-            //              if (!gate.Allowed)
-            //                  return Problem(statusCode: 402, title: "Límite del plan",
-            //                      detail: "Has alcanzado el límite mensual de Tests automáticos para tu plan.");
-            //          }
 
             // 8) Respuesta
             return Ok(new TestRunSubmitResultDto

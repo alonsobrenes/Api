@@ -1,6 +1,8 @@
 ﻿// DataAccess/BillingRepository.cs
-using System.Data;
+using EPApi.Controllers;
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Configuration;
+using System.Data;
 
 namespace EPApi.DataAccess
 {
@@ -46,8 +48,10 @@ namespace EPApi.DataAccess
             const string sql = @"
 SELECT TOP (1) current_period_start_utc, current_period_end_utc
 FROM dbo.subscriptions
-WHERE org_id = @org AND status IN (N'active', N'trialing')
+WHERE org_id = @org AND status IN (N'active', N'trial', N'trialing')
 ORDER BY updated_at_utc DESC;";
+
+
 
             await using var cn = new SqlConnection(_cs);
             await cn.OpenAsync(ct);
@@ -153,5 +157,148 @@ ORDER BY updated_at_utc DESC;";
             if (!string.Equals(plan, "trial", StringComparison.OrdinalIgnoreCase)) return false;
             return e.HasValue && nowUtc > e.Value;
         }
+
+        // Dentro de la clase BillingRepository:
+
+        public async Task<List<BillingController.PlanDto>> GetPublicPlansAsync(CancellationToken ct)
+        {
+            var result = new List<BillingController.PlanDto>();
+
+            await using var cn = new SqlConnection(_cs);
+            await cn.OpenAsync(ct);
+
+            // 1) Cargar planes públicos/activos
+            const string sqlPlans = @"
+SELECT id, code, name, ISNULL(price_amount_cents,0) AS price_cents
+FROM dbo.billing_plans
+WHERE is_active = 1 AND is_public = 1
+ORDER BY price_cents, name";
+            var plans = new List<(Guid id, string code, string name, int priceCents)>();
+            await using (var cmd = new SqlCommand(sqlPlans, cn))
+            await using (var rd = await cmd.ExecuteReaderAsync(ct))
+            {
+                while (await rd.ReadAsync(ct))
+                {
+                    plans.Add((
+                        rd.GetGuid(0),
+                        rd.GetString(1),
+                        rd.GetString(2),
+                        rd.GetInt32(3)
+                    ));
+                }
+            }
+
+            // 2) Para cada plan, cargar entitlements y formatear features legibles
+            const string sqlEnt = @"
+SELECT feature_code, limit_value
+FROM dbo.billing_plan_entitlements
+WHERE plan_id = @pid
+ORDER BY feature_code";
+
+            foreach (var p in plans)
+            {
+                var feats = new List<string>();
+                await using var cmdE = new SqlCommand(sqlEnt, cn);
+                cmdE.Parameters.Add(new SqlParameter("@pid", SqlDbType.UniqueIdentifier) { Value = p.id });
+                await using var rdE = await cmdE.ExecuteReaderAsync(ct);
+                while (await rdE.ReadAsync(ct))
+                {
+                    var code = rdE.GetString(0);
+                    var has = !rdE.IsDBNull(1);
+                    var val = has ? rdE.GetInt64(1) : 0L;
+
+                    if (code.Equals("ai.credits.monthly", StringComparison.OrdinalIgnoreCase) && has)
+                        feats.Add($"{val:N0} tokens IA/mes");
+                    else if (code.Equals("stt.minutes.monthly", StringComparison.OrdinalIgnoreCase) && has)
+                        feats.Add($"{val:N0} tokens transcripción IA/mes");
+                    else if (code.Equals("tests.auto.monthly", StringComparison.OrdinalIgnoreCase) && has)
+                        feats.Add($"{val:N0} tests auto/mes");
+                    else if (code.Equals("sacks.monthly", StringComparison.OrdinalIgnoreCase) && has)
+                        feats.Add($"{val:N0} SACKS/mes");
+                    else if (code.Equals("seats", StringComparison.OrdinalIgnoreCase) && has)
+                        feats.Add($"{val:N0} seats");
+                    else if (code.Equals("storage.gb", StringComparison.OrdinalIgnoreCase) && has)
+                        feats.Add($"{val:N0} GB almacenamiento");
+                    else if (has)
+                        feats.Add($"{code}: {val}");
+                }
+
+                var monthlyUsd = (decimal)p.priceCents / 100m;
+                result.Add(new BillingController.PlanDto(p.code, p.name, monthlyUsd, feats));
+            }
+
+            return result;
+        }
+
+        public async Task<Dictionary<string, int>> GetEntitlementsByPlanCodeAsync(string planCode, CancellationToken ct)
+        {
+            var map = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrWhiteSpace(planCode)) return map;
+
+            await using var cn = new SqlConnection(_cs);
+            await cn.OpenAsync(ct);
+
+            const string sql = @"
+SELECT e.feature_code, e.limit_value
+FROM dbo.billing_plans p
+JOIN dbo.billing_plan_entitlements e ON e.plan_id = p.id
+WHERE p.code = @code";
+
+            await using var cmd = new SqlCommand(sql, cn);
+            cmd.Parameters.Add(new SqlParameter("@code", SqlDbType.NVarChar, 50) { Value = planCode.Trim().ToLowerInvariant() });
+
+            await using var rd = await cmd.ExecuteReaderAsync(ct);
+            while (await rd.ReadAsync(ct))
+            {
+                var feature = rd.GetString(0);
+                if (!rd.IsDBNull(1))
+                {
+                    var lim64 = rd.GetInt64(1);
+                    var lim32 = lim64 > int.MaxValue ? int.MaxValue : (int)lim64;
+                    map[feature] = lim32;
+                }
+            }
+
+            return map;
+        }
+
+        public async Task<(string planCode, string status, int seats)?> GetOrgPlanSummaryAsync(Guid orgId, CancellationToken ct)
+        {
+            await using var cn = new SqlConnection(_cs);
+            await cn.OpenAsync(ct);
+
+            const string sql = @"
+WITH sub AS (
+    SELECT TOP (1) plan_code, status
+    FROM dbo.subscriptions
+    WHERE org_id = @o AND status IN (N'active', N'trial', N'trialing')
+    ORDER BY updated_at_utc DESC
+)
+SELECT 
+    s.plan_code,
+    s.status,
+    CAST(ISNULL(e.limit_value, 0) AS INT) AS seats
+FROM sub s
+LEFT JOIN dbo.billing_plans p
+    ON p.code = s.plan_code
+LEFT JOIN dbo.billing_plan_entitlements e
+    ON e.plan_id = p.id AND e.feature_code = N'seats';";
+
+            await using var cmd = new SqlCommand(sql, cn);
+            cmd.Parameters.Add(new SqlParameter("@o", SqlDbType.UniqueIdentifier) { Value = orgId });
+
+            await using var rd = await cmd.ExecuteReaderAsync(ct);
+            if (await rd.ReadAsync(ct))
+            {
+                var planCode = rd.IsDBNull(0) ? "solo" : rd.GetString(0);
+                var status = rd.IsDBNull(1) ? "active" : rd.GetString(1);
+                var seats = rd.IsDBNull(2) ? 0 : rd.GetInt32(2);
+                return (planCode, status, seats);
+            }
+
+            return null;
+        }
+
+
     }
 }

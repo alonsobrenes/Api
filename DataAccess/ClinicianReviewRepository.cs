@@ -971,6 +971,9 @@ WHERE attempt_id = @aid;";
   string? promptVersion,
   string? inputHash,
   byte? risk,
+  int? promptTokens,
+  int? completionTokens,
+  int? totalTokens,
   CancellationToken ct = default)
         {
             await using var cn = new SqlConnection(_cs);
@@ -981,14 +984,15 @@ IF EXISTS (SELECT 1 FROM dbo.test_attempt_ai_opinions WHERE attempt_id=@aid)
 BEGIN
   UPDATE dbo.test_attempt_ai_opinions
      SET opinion_text=@txt, opinion_json=@js, model_version=@model, prompt_version=@pver,
-         input_hash=@hash, risk_level=@risk, updated_at_utc = SYSUTCDATETIME()
+         input_hash=@hash, risk_level=@risk, updated_at_utc = SYSUTCDATETIME(),
+         prompt_tokens=@prompt_tokens,completion_tokens=@completion_tokens,total_tokens=@total_tokens
    WHERE attempt_id=@aid;
 END
 ELSE
 BEGIN
   INSERT INTO dbo.test_attempt_ai_opinions
-    (attempt_id, patient_id, opinion_text, opinion_json, model_version, prompt_version, input_hash, risk_level, created_at_utc)
-  VALUES (@aid, @pid, @txt, @js, @model, @pver, @hash, @risk, SYSUTCDATETIME());
+    (attempt_id, patient_id, opinion_text, opinion_json, model_version, prompt_version, input_hash, risk_level, created_at_utc,prompt_tokens,completion_tokens,total_tokens)
+  VALUES (@aid, @pid, @txt, @js, @model, @pver, @hash, @risk, SYSUTCDATETIME(),@prompt_tokens,@completion_tokens,@total_tokens);
 END";
 
             await using var cmd = new SqlCommand(sql, cn);
@@ -1000,6 +1004,10 @@ END";
             cmd.Parameters.Add(new SqlParameter("@pver", System.Data.SqlDbType.NVarChar, 50) { Value = (object?)promptVersion ?? DBNull.Value });
             cmd.Parameters.Add(new SqlParameter("@hash", System.Data.SqlDbType.NVarChar, 100) { Value = (object?)inputHash ?? DBNull.Value });
             cmd.Parameters.Add(new SqlParameter("@risk", System.Data.SqlDbType.TinyInt) { Value = (object?)risk ?? DBNull.Value });
+            cmd.Parameters.Add(new SqlParameter("@prompt_tokens", System.Data.SqlDbType.Int) { Value = (object?)promptTokens ?? DBNull.Value });
+            cmd.Parameters.Add(new SqlParameter("@completion_tokens", System.Data.SqlDbType.Int) { Value = (object?)completionTokens ?? DBNull.Value });
+            cmd.Parameters.Add(new SqlParameter("@total_tokens", System.Data.SqlDbType.Int) { Value = (object?)totalTokens ?? DBNull.Value });
+
             await cmd.ExecuteNonQueryAsync(ct);
         }
 

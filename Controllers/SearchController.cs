@@ -5,6 +5,7 @@ using EPApi.Services.Search;
 using Microsoft.AspNetCore.Mvc;
 using System.Diagnostics;
 using System.Security.Claims;
+using EPApi.Services.Orgs;
 
 namespace EPApi.Controllers
 {
@@ -15,6 +16,7 @@ namespace EPApi.Controllers
         private readonly ISearchService _svc;
         private readonly ILogger<SearchController> _log;
         private readonly BillingRepository _billing;
+        private readonly IOrgAccessService _orgAccess;
 
         private int RequireUserId()
         {
@@ -32,11 +34,12 @@ namespace EPApi.Controllers
             return org.Value;
         }
 
-        public SearchController(ISearchService svc, ILogger<SearchController> log, BillingRepository billing)
+        public SearchController(ISearchService svc, ILogger<SearchController> log, BillingRepository billing, IOrgAccessService orgAccess)
         {
             _svc = svc;
             _log = log;
             _billing = billing;
+            _orgAccess = orgAccess;
         }
 
         /// <summary>
@@ -47,10 +50,18 @@ namespace EPApi.Controllers
         public async Task<ActionResult<SearchResponseDto>> Search([FromBody] SearchRequestDto body, CancellationToken ct)
         {
             var orgId = await RequireOrgIdAsync(ct);
+            var userId = RequireUserId(); 
+            var allowProfessionals = await _orgAccess
+            .IsOwnerOfMultiSeatOrgAsync(userId, orgId, ct);
+            _log.LogDebug("Search allowProfessionals={Allow}", allowProfessionals);
+
             var sw = Stopwatch.StartNew();
-            var res = await _svc.SearchAsync(orgId, body ?? new SearchRequestDto(), ct);
+
+            var res = await _svc.SearchAsync(orgId, body ?? new SearchRequestDto(), allowProfessionals, ct);
+
             _log.LogInformation("search done org={Org} q='{Q}' types={Types} total={Total} dur={Ms}ms",
                 orgId, body?.Q, body?.Types == null ? 0 : body.Types.Length, res.Total, sw.ElapsedMilliseconds);
+            
             return Ok(res);
         }
 
@@ -62,10 +73,15 @@ namespace EPApi.Controllers
         public async Task<ActionResult<SearchSuggestResponse>> Suggest([FromQuery] string q, [FromQuery] int limit = 10, CancellationToken ct = default)
         {
             var orgId = await RequireOrgIdAsync(ct);
+            var userId = RequireUserId();
+            var allowProfessionals = await _orgAccess
+            .IsOwnerOfMultiSeatOrgAsync(userId, orgId, ct);
+            _log.LogDebug("Suggest allowProfessionals={Allow}", allowProfessionals);
+
             //if (limit <= 0 || limit > 50) limit = 10;
             //var lim = Math.Clamp(limit ?? 10, 1, 25);
             var lim = Math.Clamp(limit, 1, 25);
-            var res = await _svc.SuggestAsync(orgId, q ?? string.Empty, limit, ct);
+            var res = await _svc.SuggestAsync(orgId, q ?? string.Empty, limit, allowProfessionals, ct);
             return Ok(res);
         }
 

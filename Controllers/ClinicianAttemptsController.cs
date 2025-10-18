@@ -204,6 +204,9 @@ namespace EPApi.Controllers
             public string? PromptVersion { get; set; }
             public string? InputHash { get; set; }
             public byte? RiskLevel { get; set; }
+            public int? PromptTokens { get; set; }
+            public int? CompletionTokens { get; set; }
+            public int? TotalTokens { get; set; }
         }
 
         [HttpGet("{attemptId:guid}/ai-opinion")]
@@ -234,6 +237,9 @@ namespace EPApi.Controllers
                 body.PromptVersion,
                 body.InputHash,
                 body.RiskLevel,
+                body.PromptTokens,
+                body.CompletionTokens,
+                body.TotalTokens,                
                 ct
             );
 
@@ -282,17 +288,22 @@ namespace EPApi.Controllers
                 return Problem(statusCode: 402, title: "Período de prueba",
                     detail: "Tu período de prueba expiró. Elige un plan para continuar.");
 
-            //var gate = await _usage.TryConsumeAsync(orgId, "ai.credits.monthly", 1, ct);
-            var gate = await _usage.TryConsumeAsync(orgId, "ai.credits.monthly", 1, $"aiopinion:{attemptId}:{inputHash}", ct);
-
-            if (!gate.Allowed)
-                return Problem(statusCode: 402, title: "Límite del plan",
-                    detail: "Has alcanzado el límite mensual de Opiniones IA para tu plan.");
-
+            
             // 4) Llamar a IA (inyecta tu servicio de IA por DI: IAssistantService / IOpenAIService, etc.)
             var prompt = AiOpinionPromptBuilder.Build(bundle, promptVersion);
             var ai = await _ai.GenerateOpinionAsync(prompt, modelVersion, ct);
-            // ai: { Text, Json, RiskLevel(byte?) }
+            var tokens = ai.TotalTokens ?? ((ai.PromptTokens ?? 0) + (ai.CompletionTokens ?? 0));
+            tokens = Math.Max(tokens, 1);
+
+            var key = $"aiopinion:{attemptId}:{inputHash}";
+            var gate = await _usage.TryConsumeAsync(orgId, "ai.credits.monthly", tokens, key, ct);
+
+            if (!gate.Allowed)
+            {
+                return Problem(statusCode: 402, title: "Límite del plan",
+                    detail: "Has alcanzado el límite mensual de créditos de IA para tu plan.");
+            }
+            
 
             // 4) Guardar
             await _repo.UpsertAiOpinionAsync(
@@ -304,6 +315,9 @@ namespace EPApi.Controllers
                 promptVersion,
                 inputHash,
                 ai.RiskLevel,
+                ai.PromptTokens,
+                ai.CompletionTokens,
+                ai.TotalTokens,
                 ct
             );
 

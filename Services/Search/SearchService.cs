@@ -53,7 +53,8 @@ namespace EPApi.Services.Search
             return (text, labels.Distinct().ToArray(), tags.Distinct().ToArray());
         }
 
-        public async Task<SearchResponseDto> SearchAsync(Guid orgId, SearchRequestDto req, CancellationToken ct)
+
+        public async Task<SearchResponseDto> SearchAsync(Guid orgId, SearchRequestDto req, bool allowProfessionals, CancellationToken ct = default)
         {
             var sw = Stopwatch.StartNew();
 
@@ -102,7 +103,6 @@ namespace EPApi.Services.Search
             }
 
             // Usamos SOLO los tokens parseados del texto para filtros de labels/hashtags.
-            // (No dependemos de req.Labels/req.Hashtags del DTO para evitar incompatibilidades de tipo.)
             var labelCodes = labelCodesFromQ ?? Array.Empty<string>();
             var hashtags = hashtagsFromQ ?? Array.Empty<string>();
 
@@ -168,7 +168,6 @@ WHERE {string.Join(" AND ", where)}
                ========================= */
             if (wantInterviews)
             {
-                // Filtramos org por org_members (patients no tiene org_id)
                 var where = new List<string> { "m.org_id = @org" };
 
                 if (qText.Length > 0)
@@ -239,9 +238,7 @@ WHERE 1=1
 
             /* =========================
                  SUBQUERY: PATIENTS
-               =========================
-               - Filtrado de organización vía org_members
-            */
+               ========================= */
             if (wantPatients)
             {
                 var where = new List<string> { "1=1" };
@@ -303,11 +300,10 @@ WHERE {string.Join(" AND ", where)}
             }
 
             /* =========================
-                 SUBQUERY: TESTS (test_attempts)
+                 SUBQUERY: TESTS
                ========================= */
             if (wantTests)
             {
-                // Filtrado por organización vía org_members del paciente (mp) o del asignador (m)
                 var where = new List<string> {
                     "(mp.org_id = @org OR m.org_id = @org)"
                 };
@@ -373,7 +369,7 @@ WHERE 1=1
             }
 
             /* =========================
-                 SUBQUERY: ATTACHMENTS (patient_files)
+                 SUBQUERY: ATTACHMENTS
                ========================= */
             if (wantFiles)
             {
@@ -425,7 +421,7 @@ WHERE {string.Join(" AND ", where)}
                 sbUnion.AppendLine("UNION ALL");
             }
 
-            // Quitar el último UNION ALL
+            // Quitar último UNION ALL
             if (sbUnion.Length == 0)
             {
                 return new SearchResponseDto
@@ -492,13 +488,13 @@ OFFSET @skip ROWS FETCH NEXT @take ROWS ONLY;
                         UpdatedAtUtc = rd.IsDBNull(4) ? (DateTime?)null : rd.GetDateTime(4),
                         Labels = new(),
                         Hashtags = new(),
-                        Url = BuildUrl(rd.GetString(0), rd.GetGuid(5).ToString(),  rd.GetString(1))
+                        Url = BuildUrl(rd.GetString(0), rd.GetGuid(5).ToString(), rd.GetString(1))
                     };
                     items.Add(dto);
                 }
             }
 
-            return new SearchResponseDto
+            var response = new SearchResponseDto
             {
                 Page = page,
                 PageSize = take,
@@ -506,13 +502,89 @@ OFFSET @skip ROWS FETCH NEXT @take ROWS ONLY;
                 Items = items,
                 DurationMs = sw.ElapsedMilliseconds
             };
+
+            // Resolver labels del query libre si no vienen ya resueltos
+            if ((req.Labels == null || req.Labels.Length == 0) && !string.IsNullOrWhiteSpace(req.Q))
+            {
+                var resolved = await ResolveLabelIdsFromQueryAsync(orgId, req.Q, ct);
+                if (resolved != null && resolved.Count > 0)
+                {
+                    req.Labels = resolved.ToArray();
+                }
+            }
+
+            // Profesionales (si aplica)
+            if (allowProfessionals)
+            {
+                var pros = await QueryProfessionalsAsync(orgId, req, ct);
+                response.Items.AddRange(pros);
+                response.Total += pros.LongCount();
+            }
+
+            response.DurationMs = (long)sw.Elapsed.TotalMilliseconds;
+            return response;
         }
 
-        public async Task<SearchSuggestResponse> SuggestAsync(Guid orgId, string q, int limit, CancellationToken ct)
+        private static List<string> ExtractLabelCodes(string q)
+        {
+            var list = new List<string>();
+            if (string.IsNullOrWhiteSpace(q)) return list;
+
+            var idx = 0;
+            while (idx < q.Length)
+            {
+                var i = q.IndexOf("label:", idx, StringComparison.OrdinalIgnoreCase);
+                if (i < 0) break;
+                var start = i + "label:".Length;
+                var j = start;
+                while (j < q.Length && !char.IsWhiteSpace(q[j])) j++;
+                var code = q.Substring(start, j - start).Trim();
+                if (!string.IsNullOrWhiteSpace(code)) list.Add(code);
+                idx = j;
+            }
+            return list;
+        }
+
+        private async Task<List<int>> ResolveLabelIdsFromQueryAsync(Guid orgId, string q, CancellationToken ct)
+        {
+            var codes = ExtractLabelCodes(q);
+            var ids = new List<int>();
+            if (codes.Count == 0) return ids;
+
+            using var cn = new SqlConnection(_cs);
+            await cn.OpenAsync(ct);
+
+            var ps = new List<string>();
+            using var cmd = new SqlCommand { Connection = cn };
+            for (int i = 0; i < codes.Count; i++)
+            {
+                var p = "@c" + i;
+                ps.Add(p);
+                cmd.Parameters.Add(new SqlParameter(p, SqlDbType.NVarChar, 64) { Value = codes[i] });
+            }
+            cmd.Parameters.Add(new SqlParameter("@org", SqlDbType.UniqueIdentifier) { Value = orgId });
+
+            cmd.CommandText = @"
+SELECT l.id
+FROM dbo.labels l
+WHERE l.org_id = @org
+  AND l.code IN (" + string.Join(",", ps) + @")";
+
+            using var rd = await cmd.ExecuteReaderAsync(ct);
+            while (await rd.ReadAsync(ct))
+                ids.Add(rd.GetInt32(0));
+
+            return ids;
+        }
+
+        // ========= SUGGEST (ajustado: EntitySuggestDto.Id -> string) =========
+        public async Task<SearchSuggestResponse> SuggestAsync(Guid orgId, string q, int limit, bool allowProfessionals, CancellationToken ct)
         {
             var sw = Stopwatch.StartNew();
             q = (q ?? string.Empty).Trim();
 
+            // Reutilizamos el parser para soportar "label:xxx" y "#tag"
+            var (qText, labelCodesFromQ, hashtagsFromQ) = ParseTokens(q);
             var tagList = new List<string>();
             var labelList = new List<LabelSuggestDto>();
             var entityList = new List<EntitySuggestDto>();
@@ -520,8 +592,8 @@ OFFSET @skip ROWS FETCH NEXT @take ROWS ONLY;
             await using var cn = new SqlConnection(_cs);
             await cn.OpenAsync(ct);
 
-            // Hashtags (prefijo)
-            if (q.Length > 0)
+            // ===== Hashtags (prefijo por texto limpio) =====
+            if (!string.IsNullOrWhiteSpace(qText))
             {
                 const string sqlTags = @"
 SELECT TOP (@lim) h.tag
@@ -531,15 +603,15 @@ ORDER BY h.tag ASC;";
                 await using (var cmd = new SqlCommand(sqlTags, cn))
                 {
                     cmd.Parameters.Add(new("@org", SqlDbType.UniqueIdentifier) { Value = orgId });
-                    cmd.Parameters.Add(new("@q", SqlDbType.NVarChar, 64) { Value = q.ToLowerInvariant() });
+                    cmd.Parameters.Add(new("@q", SqlDbType.NVarChar, 64) { Value = qText.ToLowerInvariant() });
                     cmd.Parameters.Add(new("@lim", SqlDbType.Int) { Value = limit });
                     await using var rd = await cmd.ExecuteReaderAsync(ct);
                     while (await rd.ReadAsync(ct)) tagList.Add(rd.GetString(0));
                 }
             }
 
-            // Labels (prefijo)
-            if (q.Length > 0)
+            // ===== Labels (prefijo por texto limpio) =====
+            if (!string.IsNullOrWhiteSpace(qText))
             {
                 const string sqlLabels = @"
 SELECT TOP (@lim) l.id, l.code, l.name, l.color_hex
@@ -550,28 +622,28 @@ ORDER BY l.code ASC;";
                 {
                     await using var cmd = new SqlCommand(sqlLabels, cn);
                     cmd.Parameters.Add(new("@org", SqlDbType.UniqueIdentifier) { Value = orgId });
-                    cmd.Parameters.Add(new("@q", SqlDbType.NVarChar, 128) { Value = q });
+                    cmd.Parameters.Add(new("@q", SqlDbType.NVarChar, 128) { Value = qText });
                     cmd.Parameters.Add(new("@lim", SqlDbType.Int) { Value = limit });
                     await using var rd = await cmd.ExecuteReaderAsync(ct);
                     while (await rd.ReadAsync(ct))
                     {
                         labelList.Add(new LabelSuggestDto
                         {
-                            Id = rd.GetInt32(0),                // labels.id es INT
+                            Id = rd.GetInt32(0),
                             Code = rd.IsDBNull(1) ? "" : rd.GetString(1),
                             Name = rd.IsDBNull(2) ? "" : rd.GetString(2),
                             ColorHex = rd.IsDBNull(3) ? "#999999" : rd.GetString(3)
                         });
                     }
                 }
-                catch { /* opcional */ }
+                catch { /* no-op */ }
             }
 
-            // ===== ENTIDADES (prefijo) =====
-
+            // ===== ENTIDADES (prefijo por texto limpio) =====
             int per = Math.Max(1, limit / 5);
 
             // Patients
+            if (!string.IsNullOrWhiteSpace(qText))
             {
                 const string sql = @"
 SELECT TOP (@lim)
@@ -585,38 +657,41 @@ ORDER BY p.updated_at DESC;";
                 {
                     await using var cmd = new SqlCommand(sql, cn);
                     cmd.Parameters.Add(new("@org", SqlDbType.UniqueIdentifier) { Value = orgId });
-                    cmd.Parameters.Add(new("@q", SqlDbType.NVarChar, 200) { Value = q });
+                    cmd.Parameters.Add(new("@q", SqlDbType.NVarChar, 200) { Value = qText });
                     cmd.Parameters.Add(new("@lim", SqlDbType.Int) { Value = per });
                     await using var rd = await cmd.ExecuteReaderAsync(ct);
                     while (await rd.ReadAsync(ct))
-                        entityList.Add(new EntitySuggestDto { Type = "patient", Id = Guid.Parse(rd.GetString(0)), Title = rd.GetString(1) });
+                        entityList.Add(new EntitySuggestDto { Type = "patient", Id = rd.GetString(0), Title = rd.GetString(1) });
                 }
                 catch { }
             }
 
             // Sessions
+            if (!string.IsNullOrWhiteSpace(qText))
             {
                 const string sql = @"
 SELECT TOP (@lim)
   CONVERT(nvarchar(36), s.id) AS id,
   s.title AS title
 FROM dbo.patient_sessions s
-WHERE s.org_id=@org AND s.deleted_at_utc IS NULL AND (s.title LIKE ('%' + @q + '%') OR s.content_text LIKE ('%' + @q + '%') OR s.ai_tidy_text LIKE ('%' + @q + '%') OR s.ai_opinion_text LIKE ('%' + @q + '%'))
+WHERE s.org_id=@org AND s.deleted_at_utc IS NULL AND
+      (s.title LIKE ('%' + @q + '%') OR s.content_text LIKE ('%' + @q + '%') OR s.ai_tidy_text LIKE ('%' + @q + '%') OR s.ai_opinion_text LIKE ('%' + @q + '%'))
 ORDER BY s.updated_at_utc DESC;";
                 try
                 {
                     await using var cmd = new SqlCommand(sql, cn);
                     cmd.Parameters.Add(new("@org", SqlDbType.UniqueIdentifier) { Value = orgId });
-                    cmd.Parameters.Add(new("@q", SqlDbType.NVarChar, 200) { Value = q });
+                    cmd.Parameters.Add(new("@q", SqlDbType.NVarChar, 200) { Value = qText });
                     cmd.Parameters.Add(new("@lim", SqlDbType.Int) { Value = per });
                     await using var rd = await cmd.ExecuteReaderAsync(ct);
                     while (await rd.ReadAsync(ct))
-                        entityList.Add(new EntitySuggestDto { Type = "session", Id = Guid.Parse(rd.GetString(0)), Title = rd.IsDBNull(1) ? "" : rd.GetString(1) });
+                        entityList.Add(new EntitySuggestDto { Type = "session", Id = rd.GetString(0), Title = rd.IsDBNull(1) ? "" : rd.GetString(1) });
                 }
                 catch { }
             }
 
             // Attachments
+            if (!string.IsNullOrWhiteSpace(qText))
             {
                 const string sql = @"
 SELECT TOP (@lim)
@@ -629,16 +704,17 @@ ORDER BY pf.uploaded_at_utc DESC;";
                 {
                     await using var cmd = new SqlCommand(sql, cn);
                     cmd.Parameters.Add(new("@org", SqlDbType.UniqueIdentifier) { Value = orgId });
-                    cmd.Parameters.Add(new("@q", SqlDbType.NVarChar, 200) { Value = q });
+                    cmd.Parameters.Add(new("@q", SqlDbType.NVarChar, 200) { Value = qText });
                     cmd.Parameters.Add(new("@lim", SqlDbType.Int) { Value = per });
                     await using var rd = await cmd.ExecuteReaderAsync(ct);
                     while (await rd.ReadAsync(ct))
-                        entityList.Add(new EntitySuggestDto { Type = "attachment", Id = Guid.Parse(rd.GetString(0)), Title = rd.IsDBNull(1) ? "" : rd.GetString(1) });
+                        entityList.Add(new EntitySuggestDto { Type = "attachment", Id = rd.GetString(0), Title = rd.IsDBNull(1) ? "" : rd.GetString(1) });
                 }
                 catch { }
             }
 
-            // Interviews (ahora SÍ filtra por q)
+            // Interviews
+            if (!string.IsNullOrWhiteSpace(qText))
             {
                 const string sql = @"
 SELECT TOP (@lim)
@@ -657,13 +733,103 @@ ORDER BY i.started_at_utc DESC;";
                 {
                     await using var cmd = new SqlCommand(sql, cn);
                     cmd.Parameters.Add(new("@org", SqlDbType.UniqueIdentifier) { Value = orgId });
-                    cmd.Parameters.Add(new("@q", SqlDbType.NVarChar, 4000) { Value = q });
+                    cmd.Parameters.Add(new("@q", SqlDbType.NVarChar, 4000) { Value = qText });
                     cmd.Parameters.Add(new("@lim", SqlDbType.Int) { Value = per });
                     await using var rd = await cmd.ExecuteReaderAsync(ct);
                     while (await rd.ReadAsync(ct))
-                        entityList.Add(new EntitySuggestDto { Type = "interview", Id = Guid.Parse(rd.GetString(0)), Title = rd.GetString(1) });
+                        entityList.Add(new EntitySuggestDto { Type = "interview", Id = rd.GetString(0), Title = rd.GetString(1) });
                 }
                 catch { }
+            }
+
+            // ===== PROFESSIONALS (nuevo en Suggest) =====
+            if (allowProfessionals)
+            {
+                // Si hay label:XXX en la consulta, priorizamos filtrar por labels;
+                // si NO hay labels y hay qText, usamos prefijo por email.
+                var labelCodes = labelCodesFromQ ?? Array.Empty<string>();
+                var hasLabels = labelCodes.Length > 0;
+                var hasText = !string.IsNullOrWhiteSpace(qText);
+
+                // Limitar porción de resultados de profesionales
+                int perPros = Math.Max(1, limit / 5);
+
+                if (hasLabels)
+                {
+                    // Por labels en profesionales (target_id_int), sin exigir qText
+                    // Parametrizamos IN de códigos de label
+                    var pnames = new List<string>();
+                    using var cmd = new SqlCommand { Connection = cn };
+                    cmd.Parameters.Add(new("@org", SqlDbType.UniqueIdentifier) { Value = orgId });
+                    cmd.Parameters.Add(new("@lim", SqlDbType.Int) { Value = perPros });
+
+                    for (int i = 0; i < labelCodes.Length; i++)
+                    {
+                        var pn = "@c" + i;
+                        pnames.Add(pn);
+                        cmd.Parameters.Add(new SqlParameter(pn, SqlDbType.NVarChar, 64) { Value = labelCodes[i] });
+                    }
+
+                    cmd.CommandText = @"
+SELECT DISTINCT TOP (@lim)
+  CONVERT(nvarchar(32), u.id) AS id,
+  u.email AS title
+FROM dbo.users u
+JOIN dbo.org_members m
+  ON m.user_id=u.id AND m.org_id=@org AND m.role='editor'
+JOIN dbo.label_assignments la
+  ON la.org_id=@org AND la.target_type='professional' AND la.target_id_int=u.id
+JOIN dbo.labels l
+  ON l.id=la.label_id AND l.org_id=@org AND l.code IN (" + string.Join(",", pnames) + @")
+ORDER BY u.id DESC;";
+
+                    try
+                    {
+                        await using var rd = await cmd.ExecuteReaderAsync(ct);
+                        while (await rd.ReadAsync(ct))
+                        {
+                            entityList.Add(new EntitySuggestDto
+                            {
+                                Type = "professional",
+                                Id = rd.GetString(0),
+                                Title = rd.IsDBNull(1) ? "" : rd.GetString(1)
+                            });
+                        }
+                    }
+                    catch { }
+                }
+                else if (hasText)
+                {
+                    // Por prefijo de email del profesional
+                    const string sqlPros = @"
+SELECT TOP (@lim)
+  CONVERT(nvarchar(32), u.id) AS id,
+  u.email AS title
+FROM dbo.users u
+JOIN dbo.org_members m
+  ON m.user_id=u.id AND m.org_id=@org AND m.role='editor'
+WHERE u.email LIKE (@q + '%')
+ORDER BY u.id DESC;";
+                    try
+                    {
+                        await using var cmd = new SqlCommand(sqlPros, cn);
+                        cmd.Parameters.Add(new("@org", SqlDbType.UniqueIdentifier) { Value = orgId });
+                        cmd.Parameters.Add(new("@q", SqlDbType.NVarChar, 256) { Value = qText });
+                        cmd.Parameters.Add(new("@lim", SqlDbType.Int) { Value = perPros });
+                        await using var rd = await cmd.ExecuteReaderAsync(ct);
+                        while (await rd.ReadAsync(ct))
+                        {
+                            entityList.Add(new EntitySuggestDto
+                            {
+                                Type = "professional",
+                                Id = rd.GetString(0),
+                                Title = rd.IsDBNull(1) ? "" : rd.GetString(1)
+                            });
+                        }
+                    }
+                    catch { }
+                }
+                // Si no hay labels ni texto, no sugerimos profesionales (no hay señal).
             }
 
             sw.Stop();
@@ -674,6 +840,151 @@ ORDER BY i.started_at_utc DESC;";
                 Entities = entityList.ToArray(),
                 DurationMs = (int)Math.Min(int.MaxValue, sw.ElapsedMilliseconds)
             };
+        }
+
+
+        private static string? StripLabelTokens(string? q)
+        {
+            if (string.IsNullOrWhiteSpace(q)) return null;
+            var parts = q.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            var kept = new List<string>(parts.Length);
+            foreach (var p in parts)
+            {
+                if (p.StartsWith("label:", StringComparison.OrdinalIgnoreCase)) continue;
+                kept.Add(p);
+            }
+            var plain = string.Join(" ", kept).Trim();
+            return string.IsNullOrWhiteSpace(plain) ? null : plain;
+        }
+
+        private async Task<List<SearchResultItemDto>> QueryProfessionalsAsync(Guid orgId, SearchRequestDto req, CancellationToken ct)
+        {
+            var results = new List<SearchResultItemDto>();
+            using var cn = new SqlConnection(_cs);
+            await cn.OpenAsync(ct);
+
+            var hasLabels = req.Labels != null && req.Labels.Length > 0;
+
+            // limpiar q de tokens "label:*"
+            var qPlain = StripLabelTokens(req.Q);
+
+            var cmd = new SqlCommand { Connection = cn };
+            var sql = @"
+WITH pros AS (
+  SELECT u.id AS user_id,
+         u.email AS email,
+         CAST(NULL AS datetime2) AS updated_at_utc
+  FROM dbo.users u
+  JOIN dbo.org_members m
+    ON m.user_id = u.id
+   AND m.org_id  = @org
+   AND m.role    = 'editor'
+  WHERE
+    (@q IS NULL
+      OR u.email LIKE '%' + @q + '%'
+    )
+)
+SELECT DISTINCT
+  p.user_id,
+  p.email,
+  p.updated_at_utc
+FROM pros p
+";
+
+            if (hasLabels)
+            {
+                var labelParams = new List<string>();
+                for (int i = 0; i < req.Labels!.Length; i++)
+                {
+                    var pname = "@l" + i;
+                    labelParams.Add(pname);
+                    cmd.Parameters.Add(new SqlParameter(pname, SqlDbType.Int) { Value = req.Labels[i] });
+                }
+
+                sql += @"
+JOIN dbo.label_assignments la
+  ON la.org_id = @org
+ AND la.target_type = 'professional'
+ AND la.target_id_int = p.user_id
+ AND la.label_id IN (" + string.Join(",", labelParams) + @")
+";
+            }
+
+            sql += @"
+ORDER BY p.user_id DESC
+OFFSET @skip ROWS FETCH NEXT @take ROWS ONLY;";
+
+            cmd.CommandText = sql;
+            cmd.Parameters.Add(new SqlParameter("@org", SqlDbType.UniqueIdentifier) { Value = orgId });
+            cmd.Parameters.Add(new SqlParameter("@q", SqlDbType.NVarChar, 256) { Value = (object?)qPlain ?? DBNull.Value });
+            cmd.Parameters.Add(new SqlParameter("@skip", SqlDbType.Int) { Value = Math.Max(0, (req.Page - 1) * req.PageSize) });
+            cmd.Parameters.Add(new SqlParameter("@take", SqlDbType.Int) { Value = req.PageSize });
+
+            var ids = new List<int>();
+            using (var rd = await cmd.ExecuteReaderAsync(ct))
+            {
+                while (await rd.ReadAsync(ct))
+                {
+                    var uid = rd.GetInt32(0);
+                    ids.Add(uid);
+
+                    var email = rd.IsDBNull(1) ? null : rd.GetString(1);
+                    DateTime? updated = rd.IsDBNull(2) ? (DateTime?)null : rd.GetDateTime(2);
+
+                    results.Add(new SearchResultItemDto
+                    {
+                        Type = "professional",
+                        Id = uid.ToString(),
+                        Title = email,
+                        Snippet = email,
+                        UpdatedAtUtc = updated,
+                        Url = $"/app/clinic/profesionales?openProfessionalId={uid}"
+                    });
+                }
+            }
+
+            if (ids.Count == 0) return results;
+
+            var labelsSql = @"
+SELECT la.target_id_int AS user_id, l.id, l.code, l.name, l.color_hex
+FROM dbo.label_assignments la
+JOIN dbo.labels l
+  ON l.id = la.label_id
+WHERE la.org_id = @org
+  AND la.target_type = 'professional'
+  AND la.target_id_int IN (" + string.Join(",", ids) + ")";
+
+            using (var cmdLab = new SqlCommand(labelsSql, cn))
+            {
+                cmdLab.Parameters.Add(new SqlParameter("@org", SqlDbType.UniqueIdentifier) { Value = orgId });
+
+                var map = new Dictionary<int, List<LabelChipDto>>();
+                using var rd = await cmdLab.ExecuteReaderAsync(ct);
+                while (await rd.ReadAsync(ct))
+                {
+                    var uid = rd.GetInt32(0);
+                    var lab = new LabelChipDto
+                    {
+                        Code = rd.GetString(2),
+                        Name = rd.GetString(3),
+                        ColorHex = rd.IsDBNull(4) ? "#999999" : rd.GetString(4)
+                    };
+                    if (!map.TryGetValue(uid, out var list))
+                    {
+                        list = new List<LabelChipDto>();
+                        map[uid] = list;
+                    }
+                    list.Add(lab);
+                }
+
+                foreach (var it in results)
+                {
+                    if (int.TryParse(it.Id, out var uid) && map.TryGetValue(uid, out var labs))
+                        it.Labels = labs;
+                }
+            }
+
+            return results;
         }
 
         private static string? BuildUrl(string type, string patientId, string id)
