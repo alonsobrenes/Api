@@ -29,16 +29,28 @@ namespace EPApi.Controllers
 
             var targetType = (input.TargetType ?? "").Trim().ToLowerInvariant();
             if (string.IsNullOrWhiteSpace(targetType)) return BadRequest("targetType requerido");
-            if (!Guid.TryParse(input.TargetId, out var tid)) return BadRequest("targetId inválido");
-
+            
             var orgId = Shared.OrgResolver.GetOrgIdOrThrow(Request, User);
 
-            var valid = await _repo.ValidateAsync(orgId, input.LabelId, targetType, tid, ct);
+            if (Guid.TryParse(input.TargetId, out var tid))
+            {
+                var valid = await _repo.ValidateAsync(orgId, input.LabelId, targetType, tid, ct);
+
+                if (!valid) return NotFound(); 
+
+                await _repo.AssignAsync(orgId, input.LabelId, targetType, tid, ct);
+            }
+
+            if (int.TryParse(input.TargetId, out var uid))
+            {
+                var valid = await _repo.ValidateAsync(orgId, input.LabelId, targetType, uid, ct);
+
+                if (!valid) return NotFound();
+
+                await _repo.AssignIntAsync(orgId, input.LabelId, targetType, uid, ct);
+            }
 
 
-            if (!valid) return NotFound(); // etiqueta o target no existen / no pertenecen a la org
-
-            await _repo.AssignAsync(orgId, input.LabelId, targetType, tid, ct);
             return NoContent();
         }
 
@@ -50,15 +62,23 @@ namespace EPApi.Controllers
 
             var targetType = (input.TargetType ?? "").Trim().ToLowerInvariant();
             if (string.IsNullOrWhiteSpace(targetType)) return BadRequest("targetType requerido");
-            if (!Guid.TryParse(input.TargetId, out var tid)) return BadRequest("targetId inválido");
-
+           
             var orgId = Shared.OrgResolver.GetOrgIdOrThrow(Request, User);
 
-            // Idempotente: si no existe, devolvemos 204 igual, pero si label/target no son válidos, 404
-            var valid = await _repo.ValidateAsync(orgId, input.LabelId, targetType, tid, ct);
-            if (!valid) return NotFound();
+            if (Guid.TryParse(input.TargetId, out var tid)) {
+                var valid = await _repo.ValidateAsync(orgId, input.LabelId, targetType, tid, ct);
+                if (!valid) return NotFound();
 
-            await _repo.UnassignAsync(orgId, input.LabelId, targetType, tid, ct);
+                await _repo.UnassignAsync(orgId, input.LabelId, targetType, tid, ct);
+            }
+
+            if (int.TryParse(input.TargetId, out var uid)) {
+                var valid = await _repo.ValidateAsync(orgId, input.LabelId, targetType, uid, ct);
+                if (!valid) return NotFound();
+
+                await _repo.UnassignIntAsync(orgId, input.LabelId, targetType, uid, ct);
+            }
+
             return NoContent();
         }
 
@@ -67,27 +87,42 @@ namespace EPApi.Controllers
         {
             var targetType = (type ?? "").Trim().ToLowerInvariant();
             if (string.IsNullOrWhiteSpace(targetType)) return BadRequest("type requerido");
-            if (!Guid.TryParse(id, out var tid)) return BadRequest("id inválido");
 
             var orgId = Shared.OrgResolver.GetOrgIdOrThrow(Request, User);
-
-            // Reusar validación (etiqueta no aplica; validamos target y tipo solamente):
-            // Si quieres evitar un SELECT extra, puedes saltarte esto, pero es útil para 404 temprano.
-            //var okType = targetType is "patient" or "test" or "attempt" or "attachment" or "session";
+           
             var okType = SupportedEntityTypes.IsSupported(targetType);
             if (!okType) return BadRequest("type no soportado");
 
-            var rows = await _repo.ListForTargetAsync(orgId, targetType, tid, ct);
-            var items = rows.Select(r => new LabelsController.LabelDto
+            if (Guid.TryParse(id, out var gid))
             {
-                Id = r.Id,
-                Code = r.Code,
-                Name = r.Name,
-                ColorHex = r.ColorHex,
-                IsSystem = r.IsSystem,
-                CreatedAtUtc = r.CreatedAtUtc
-            });
-            return Ok(new { items });
+                var rows = await _repo.ListForTargetAsync(orgId, type, gid, ct);
+                var items = rows.Select(r => new LabelsController.LabelDto
+                {
+                    Id = r.Id,
+                    Code = r.Code,
+                    Name = r.Name,
+                    ColorHex = r.ColorHex,
+                    IsSystem = r.IsSystem,
+                    CreatedAtUtc = r.CreatedAtUtc
+                });
+                return Ok(new { items });
+            }
+            if (int.TryParse(id, out var iid))
+            {
+                var rows = await _repo.ListForTargetIntAsync(orgId, type, iid, ct);
+                var items = rows.Select(r => new LabelsController.LabelDto
+                {
+                    Id = r.Id,
+                    Code = r.Code,
+                    Name = r.Name,
+                    ColorHex = r.ColorHex,
+                    IsSystem = r.IsSystem,
+                    CreatedAtUtc = r.CreatedAtUtc
+                });
+                return Ok(new { items });
+            }
+
+            return BadRequest(new { message = "El parámetro 'id' debe ser GUID o INT válido." });
         }
 
     }

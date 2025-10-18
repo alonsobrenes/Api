@@ -25,10 +25,30 @@ namespace EPApi.Services
 
         Task UpdateClinicianDiagnosisAsync(Guid interviewId, string? text, bool close, CancellationToken ct = default);
 
-
-        Task<Guid> CreateInterviewAsync(Guid patientId, CancellationToken ct = default);
-
+        Task<Guid> CreateInterviewAsync(Guid patientId, int clinicianUserId, CancellationToken ct = default);
+        
         Task<FirstInterviewDto?> GetFirstInterviewByPatientAsync(Guid patientId, CancellationToken ct = default);
+
+        public sealed record ClinicianInterviewRow(
+           Guid Id,
+           Guid PatientId,
+           string? PatientName,
+           DateTime? StartedAtUtc,
+           DateTime? EndedAtUtc,
+           string? Status,
+           long? DurationMs
+       );
+
+        Task<(IReadOnlyList<ClinicianInterviewRow> Items, int Total)> ListByClinicianAsync(
+            int clinicianUserId,
+            int page,
+            int pageSize,
+            string? status,
+            DateTime? fromUtc,
+            DateTime? toUtc,
+            string? search,
+            CancellationToken ct = default
+        );
 
     }
 }

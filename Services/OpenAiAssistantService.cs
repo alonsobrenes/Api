@@ -103,7 +103,23 @@ namespace EPApi.Services
                     var text2 = d2.RootElement.TryGetProperty("output_text", out var ot)
                         ? ot.GetString() ?? ""
                         : d2.RootElement.ToString();
-                    return new AiOpinionResult(text2, null, null);
+
+                    int? inTok2 = null, outTok2 = null, total2 = null;
+                    if (d2.RootElement.TryGetProperty("usage", out var u2))
+                    {
+                        if (u2.TryGetProperty("input_tokens", out var it2) && it2.TryGetInt32(out var iv2)) inTok2 = iv2;
+                        if (u2.TryGetProperty("output_tokens", out var otk2) && otk2.TryGetInt32(out var ov2)) outTok2 = ov2;
+                        if (u2.TryGetProperty("total_tokens", out var tt2) && tt2.TryGetInt32(out var tv2)) total2 = tv2;
+                    }
+
+                    
+                    return new AiOpinionResult(
+                        text2,
+                        "",
+                        null,
+                        PromptTokens: inTok2,
+                        CompletionTokens: outTok2,
+                        TotalTokens: total2);
                 }
 
                 // 401/403: credencial/ámbito/headers
@@ -122,7 +138,22 @@ namespace EPApi.Services
             using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
             var root = doc.RootElement;
             var content = root.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString() ?? "";
-            return new AiOpinionResult(content, null, null);
+
+            int? pTok = null, cTok = null, total = null;
+            if (root.TryGetProperty("usage", out var usage))
+            {
+                if (usage.TryGetProperty("prompt_tokens", out var pt) && pt.TryGetInt32(out var pv)) pTok = pv;
+                if (usage.TryGetProperty("completion_tokens", out var ctok) && ctok.TryGetInt32(out var cv)) cTok = cv;
+                if (usage.TryGetProperty("total_tokens", out var tt) && tt.TryGetInt32(out var tv)) total = tv;
+            }
+
+            return new AiOpinionResult(
+                content,
+                "",
+                null,
+                PromptTokens: pTok,
+                CompletionTokens: cTok,
+                TotalTokens: total);
         }
     }
 }

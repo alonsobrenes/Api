@@ -56,6 +56,8 @@ namespace EPApi.Services
             }
 
             sb.AppendLine("Redacta en español, en un solo bloque de 8–12 líneas.");
+            sb.AppendLine("Extrae los 3 hashtags más relevantes de los resultados. Responde solo con los hashtags, sin explicaciones.");
+            sb.AppendLine("Formato: #Hashtag1 #Hashtag2 #Hashtag3");
             return sb.ToString();
         }
     }

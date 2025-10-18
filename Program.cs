@@ -1,9 +1,11 @@
 using EPApi.DataAccess;
 using EPApi.Models;
 using EPApi.Services;
+using EPApi.Services.Email;
 using EPApi.Services.Billing;
 using EPApi.Services.Storage;
 using EPApi.Services.Archive;
+using EPApi.Services.Orgs;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
@@ -121,6 +123,8 @@ builder.Services.AddScoped<HashtagsRepository>();
 builder.Services.AddScoped<IHashtagService, HashtagService>();
 builder.Services.AddScoped<IPatientSessionsRepository, PatientSessionsRepository>();
 builder.Services.AddScoped<ISearchService, SearchService>();
+builder.Services.AddSingleton<IEmailSender, SmtpEmailSender>();
+builder.Services.AddSingleton<IOrgAccessService, OrgAccessService>();
 
 
 

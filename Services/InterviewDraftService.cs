@@ -8,8 +8,10 @@ namespace EPApi.Services
 {
     public interface IInterviewDraftService
     {
-        Task<string> GenerateDraftAsync(Guid interviewId, string promptVersion, CancellationToken ct = default);
+        Task<AiTranscriptResult> GenerateDraftAsync(Guid interviewId, string promptVersion, CancellationToken ct = default);
     }
+
+    public sealed record AiTranscriptResult(string Text, int? PromptTokens, int? CompletionTokens, int? TotalTokens);
 
     public sealed class InterviewDraftService : IInterviewDraftService
     {
@@ -24,7 +26,7 @@ namespace EPApi.Services
             _repo = repo;
         }
 
-        public async Task<string> GenerateDraftAsync(Guid interviewId, string promptVersion, CancellationToken ct = default)
+        public async Task<AiTranscriptResult> GenerateDraftAsync(Guid interviewId, string promptVersion, CancellationToken ct = default)
         {
             // 1) Trae transcripción y datos básicos del paciente
             var transcript = await _repo.GetLatestTranscriptTextAsync(interviewId, ct);
@@ -75,10 +77,11 @@ Transcripción resumida (extracto):
 
 Recomendaciones
 - …
+Hashtags
+Extrae los 3 hashtags más relevantes de las Impresiones clínicas. Responde solo con los hashtags, sin explicaciones. Formato: #Hashtag1 #Hashtag2 #Hashtag3
 
 Advertencias
 - Este texto es un borrador no oficial generado con apoyo de IA.
-
 Notas:
 - No inventes datos ausentes; deja “(Completar)” cuando falte.
 - Mantén nombres propios que vengan en la transcripción, pero no añadas otros.
@@ -118,6 +121,18 @@ Notas:
             if (!resp.IsSuccessStatusCode)
                 throw new HttpRequestException($"OpenAI error {(int)resp.StatusCode}: {body}");
 
+            using var s2 = await resp.Content.ReadAsStreamAsync(ct);
+
+            using var d2 = await JsonDocument.ParseAsync(s2, cancellationToken: ct);
+
+            int? inTok2 = null, outTok2 = null, total2 = null;
+            if (d2.RootElement.TryGetProperty("usage", out var u2))
+            {
+                if (u2.TryGetProperty("input_tokens", out var it2) && it2.TryGetInt32(out var iv2)) inTok2 = iv2;
+                if (u2.TryGetProperty("output_tokens", out var otk2) && otk2.TryGetInt32(out var ov2)) outTok2 = ov2;
+                if (u2.TryGetProperty("total_tokens", out var tt2) && tt2.TryGetInt32(out var tv2)) total2 = tv2;
+            }
+           
             using var doc = JsonDocument.Parse(body);
             var content = doc.RootElement
                              .GetProperty("choices")[0]
@@ -125,7 +140,10 @@ Notas:
                              .GetProperty("content")
                              .GetString() ?? "";
 
-            return content.Trim();
+            return new AiTranscriptResult(content.Trim(),
+                                           PromptTokens: inTok2,
+                                            CompletionTokens: outTok2,
+                                            TotalTokens: total2);
         }
     }
 }

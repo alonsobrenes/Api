@@ -13,7 +13,7 @@ namespace EPApi.Models.Search
         public string[]? Types { get; set; }
 
         // Filtros (opcionales)
-        public Guid[]? Labels { get; set; }        // ids de label (GUID)
+        public Int32[]? Labels { get; set; }        // ids de label (GUID)
         public string[]? Hashtags { get; set; }    // tags normalizados (sin '#')
 
         public DateTime? DateFromUtc { get; set; } // filtra por updatedAt/createdAt (según tipo)
@@ -66,7 +66,7 @@ namespace EPApi.Models.Search
     {
         // type: "patient" | "interview" | "session" | "test" | "attachment" (por ahora retornamos "patient")
         public string Type { get; set; } = "patient";
-        public Guid Id { get; set; }
+        public string Id { get; set; } = "";
         public string Title { get; set; } = "";
     }
 

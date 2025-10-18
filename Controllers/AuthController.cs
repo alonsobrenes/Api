@@ -1,29 +1,62 @@
-using System.ComponentModel.DataAnnotations;
-using System.Security.Claims;
-using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Mvc;
-using EPApi.Services;
 using EPApi.DataAccess;
 using EPApi.Models;
+using EPApi.Services;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
+using System;
+using System.IO;
+using System.Security.Claims;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace EPApi.Controllers
 {
     [ApiController]
-    [Route("api/[controller]")]    
-    public class AuthController : ControllerBase
+    [Route("api/[controller]")]
+    public sealed class AuthController : ControllerBase
     {
-        private readonly IAuthService _auth;
+        private readonly IRegistrationService _registration;
+        private readonly ILogger<AuthController> _logger;
+        private readonly IConfiguration _cfg;
         private readonly IUserRepository _users;
         private readonly IPasswordHasher _hasher;
-        private readonly IRegistrationService _registration;
+        private readonly IAuthService _auth;
 
-        public AuthController(IAuthService auth, IUserRepository users, IPasswordHasher hasher, IRegistrationService registration)
+        public AuthController(
+            IAuthService auth,
+            IRegistrationService registration,
+            ILogger<AuthController> logger,
+            IConfiguration cfg,
+            IUserRepository users,
+            IPasswordHasher hasher)
         {
-            _auth = auth;
+            _registration = registration;
+            _logger = logger;
+            _cfg = cfg;
             _users = users;
             _hasher = hasher;
-            _registration = registration;
+            _auth = auth;
         }
+
+        // Nota: mantengo el DTO de registro existente, y lo extiendo con planCode opcional.
+        public sealed class RegisterRequest
+        {
+            public string Email { get; set; } = string.Empty;
+            public string Password { get; set; } = string.Empty;
+            public string? Role { get; set; }
+            public string? PlanCode { get; set; }   // NUEVO: plan inicial para trial (opcional)
+        }
+
+        public sealed class RegisterResponse
+        {
+            public int UserId { get; set; }
+            public Guid OrgId { get; set; }
+            public string Message { get; set; } = "OK";
+        }
+
+        public record LoginDto(string Email, string Password);
 
         [HttpPost("login")]
         [AllowAnonymous]
@@ -38,29 +71,36 @@ namespace EPApi.Controllers
             return Ok(new { token });
         }
 
-        [HttpPost("signup")]
+
+
         [AllowAnonymous]
-        public async Task<IActionResult> Signup([FromBody] SignupDto dto, CancellationToken ct)
+        [HttpPost("signup")]
+        public async Task<ActionResult<RegisterResponse>> Signup([FromBody] RegisterRequest req, CancellationToken ct)
         {
             if (!ModelState.IsValid)
                 return ValidationProblem(ModelState);
 
-            dto.Email = dto.Email.Trim();
-            if (await _users.ExistsByEmailAsync(dto.Email, ct))
+            if (req is null || string.IsNullOrWhiteSpace(req.Email) || string.IsNullOrWhiteSpace(req.Password))
+            {
+                return BadRequest(new { message = "Email y Password requeridos" });
+            }
+
+            req.Email = req.Email.Trim();
+
+            if (await _users.ExistsByEmailAsync(req.Email, ct))
                 return Conflict(new { message = "Email already exists." });
 
             var user = new User
             {
-                Email = dto.Email,
-                PasswordHash = _hasher.Hash(dto.Password),
-                Role = string.IsNullOrWhiteSpace(dto.Role) ? "editor" : dto.Role.Trim()
+                Email = req.Email,
+                PasswordHash = _hasher.Hash(req.Password),
+                Role = string.IsNullOrWhiteSpace(req.Role) ? "editor" : req.Role.Trim()
             };
 
             var id = await _users.CreateAsync(user, ct);
 
-            // Crea org + membresía + trial
-            var orgId = await _registration.CreateOrgAndMembershipAndTrialAsync(id, orgName: user.Email, ct);
 
+            var orgId = await _registration.RegisterAsync(req, id, ct);
 
             return CreatedAtAction(nameof(Me), new { id }, new { id, email = user.Email, role = user.Role, orgId });
         }
@@ -74,19 +114,5 @@ namespace EPApi.Controllers
             var role = User.FindFirstValue(ClaimTypes.Role) ?? "User";
             return Ok(new { userName, userId, role });
         }
-    }
-
-    public record LoginDto(string Email, string Password);
-
-    public class SignupDto
-    {
-        [Required, MinLength(3), MaxLength(100)]
-        public string Email { get; set; } = string.Empty;
-
-        [Required, MinLength(6), MaxLength(128)]
-        public string Password { get; set; } = string.Empty;
-
-        [MaxLength(50)]
-        public string? Role { get; set; }
     }
 }

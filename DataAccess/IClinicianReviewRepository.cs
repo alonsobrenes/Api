@@ -40,7 +40,7 @@ namespace EPApi.DataAccess
         Task<TestBasicDto?> GetTestForClinicianByIdAsync(Guid id, CancellationToken ct = default);
         
         Task UpsertAiOpinionAsync(Guid attemptId, Guid patientId,
-          string? text, string? json, string? model, string? promptVersion, string? inputHash, byte? risk,
+          string? text, string? json, string? model, string? promptVersion, string? inputHash, byte? risk, int? PromptTokens, int? CompletionTokens, int? TotalTokens,
           CancellationToken ct = default);
 
         Task<AiOpinionDto?> GetAiOpinionByAttemptAsync(Guid attemptId, CancellationToken ct = default);

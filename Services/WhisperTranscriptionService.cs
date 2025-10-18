@@ -3,9 +3,12 @@ using Microsoft.Extensions.Configuration;
 using System.Net;
 using System.Net.Http.Headers;
 using static EPApi.Controllers.ClinicianInterviewsController;
+using TagLib;
 
 namespace EPApi.Services
 {
+    public sealed record TranscriptionResult(string? Language, string Text, string? WordsJson, long? DurationMs);
+
     public sealed class WhisperTranscriptionService : ITranscriptionService
     {
         private readonly IHttpClientFactory _http;
@@ -21,7 +24,7 @@ namespace EPApi.Services
                       ?? throw new InvalidOperationException("Missing OpenAI API key");
         }
 
-        public async Task<(string? language, string text, string? wordsJson)> TranscribeAsync(string absolutePath, CancellationToken ct = default)
+        public async Task<(string? language, string text, string? wordsJson, long? DurationMs)> TranscribeAsync(string absolutePath, CancellationToken ct = default)
         {
             var client = _http.CreateClient();
             client.BaseAddress = new Uri("https://api.openai.com/");
@@ -42,7 +45,7 @@ namespace EPApi.Services
 
                 var fileName = Path.GetFileName(absolutePath);
                 var mime = GetMimeFromExtension(Path.GetExtension(absolutePath));
-                await using var fs = File.OpenRead(absolutePath);
+                await using var fs = System.IO.File.OpenRead(absolutePath);
                 var fileContent = new StreamContent(fs);
                 fileContent.Headers.ContentType = new MediaTypeHeaderValue(mime);
                 form.Add(fileContent, "file", fileName);
@@ -50,12 +53,24 @@ namespace EPApi.Services
 
                 using var resp = await client.PostAsync("v1/audio/transcriptions", form, ct);
                 var body = await resp.Content.ReadAsStringAsync(ct);
-                
+
+                long? durationMs = null;
+                try
+                {
+                    using var t = TagLib.File.Create(absolutePath);
+                    var ms = (long)Math.Round(t.Properties.Duration.TotalMilliseconds);
+                    if (ms > 0) durationMs = ms;
+                }
+                catch
+                {
+                    durationMs = null;
+                }
+
                 if (resp.IsSuccessStatusCode)
                 {
                     var json = System.Text.Json.JsonDocument.Parse(body).RootElement;
                     var text = json.TryGetProperty("text", out var t) ? t.GetString() ?? "" : "";
-                    return ("es", text, null);
+                    return ("es", text, null, durationMs);
                 }
 
                 // Manejo amable de rate limit

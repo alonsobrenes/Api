@@ -170,10 +170,7 @@ namespace EPApi.Controllers
             var promptVersion = "tidy.v1";
             var inputFingerprint = $"{promptVersion}\nLEN:{source.Length}\nSHA:{Crypto.Sha256Hex(source)}";
             var inputHash = Crypto.Sha256Hex(inputFingerprint);
-            var gate = await _usage.TryConsumeAsync(orgId, "ai.credits.monthly", 1, $"session-tidy:{id}:{inputHash}", ct);
-            if (!gate.Allowed)
-                return Problem(statusCode: 402, title: "Límite del plan",
-                    detail: "Has alcanzado el límite mensual para esta función de tu plan.");
+            
 
             // 3) Prompt simple — sin crear clases nuevas
             var prompt = new StringBuilder()
@@ -189,6 +186,14 @@ namespace EPApi.Controllers
             // 4) Llamada a IA (siguiendo patrón de ClinicianAttempts: IAiAssistantService)
             var modelVersion = "gpt-4o-mini"; // igual al default usado en ClinicianAttempts
             var ai = await _ai.GenerateOpinionAsync(prompt, modelVersion, ct); // reutilizamos método existente
+            var tokens = ai.TotalTokens ?? ((ai.PromptTokens ?? 0) + (ai.CompletionTokens ?? 0));
+            tokens = Math.Max(tokens, 1);
+
+
+            var gate = await _usage.TryConsumeAsync(orgId, "ai.credits.monthly", tokens, $"session-tidy:{id}:{inputHash}", ct);
+            if (!gate.Allowed)
+                return Problem(statusCode: 402, title: "Límite del plan",
+                    detail: "Has alcanzado el límite mensual para esta función de tu plan.");
 
             // 5) Guardar resultado
             var updated = await _repo.UpdateAiTidyAsync(orgId, patientId, id, ai.Text, ct);
@@ -211,11 +216,8 @@ namespace EPApi.Controllers
             var promptVersion = "session.opinion.v1";
             var inputFingerprint = $"{promptVersion}\nLEN:{source.Length}\nSHA:{Crypto.Sha256Hex(source)}";
             var inputHash = Crypto.Sha256Hex(inputFingerprint);
-            var gate = await _usage.TryConsumeAsync(orgId, "ai.credits.monthly", 1, $"session-opinion:{id}:{inputHash}", ct);
-            if (!gate.Allowed)
-                return Problem(statusCode: 402, title: "Límite del plan",
-                    detail: "Has alcanzado el límite mensual para esta función de tu plan.");
 
+            
             // 3) Prompt de opinión (reutilizamos el estilo de AiOpinionPromptBuilder: síntesis prudente y no diagnóstica)
             var prompt = new StringBuilder()
                 .AppendLine($"[PROMPT_VERSION: {promptVersion}]")
@@ -229,6 +231,14 @@ namespace EPApi.Controllers
 
             var modelVersion = "gpt-4o-mini";
             var ai = await _ai.GenerateOpinionAsync(prompt, modelVersion, ct);
+            var tokens = ai.TotalTokens ?? ((ai.PromptTokens ?? 0) + (ai.CompletionTokens ?? 0));
+            tokens = Math.Max(tokens, 1);
+
+            var gate = await _usage.TryConsumeAsync(orgId, "ai.credits.monthly", tokens, $"session-opinion:{id}:{inputHash}", ct);
+            if (!gate.Allowed)
+                return Problem(statusCode: 402, title: "Límite del plan",
+                    detail: "Has alcanzado el límite mensual para esta función de tu plan.");
+
 
             var updated = await _repo.UpdateAiOpinionAsync(orgId, patientId, id, ai.Text, ct);
             return Ok(updated);

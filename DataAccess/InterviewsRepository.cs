@@ -5,6 +5,7 @@ using System.Data;
 using System.Threading;
 using System.Threading.Tasks;
 using static EPApi.Controllers.ClinicianInterviewsController;
+using static EPApi.Services.IInterviewsRepository;
 
 namespace EPApi.Services
 {
@@ -330,7 +331,7 @@ WHERE i.id = @iid;";
         }
 
 
-        public async Task<Guid> CreateInterviewAsync(Guid patientId, CancellationToken ct = default)
+        public async Task<Guid> CreateInterviewAsync(Guid patientId, int clinicianUserId, CancellationToken ct = default)
         {
             var id = Guid.NewGuid();
 
@@ -338,50 +339,157 @@ WHERE i.id = @iid;";
             await cn.OpenAsync(ct);
 
             // Detectar si existen las columnas opcionales
-            static async Task<bool> HasColumnAsync(SqlConnection cn, string table, string column, CancellationToken ct2)
-            {
-                const string q = @"SELECT 1
-                           FROM sys.columns
-                           WHERE object_id = OBJECT_ID(@tbl) AND name = @col";
-                await using var cmd = new SqlCommand(q, cn);
-                cmd.Parameters.AddWithValue("@tbl", table);
-                cmd.Parameters.AddWithValue("@col", column);
-                var o = await cmd.ExecuteScalarAsync(ct2);
-                return o != null;
-            }
+            //static async Task<bool> HasColumnAsync(SqlConnection cn, string table, string column, CancellationToken ct2)
+            //{
+            //    const string q = @"SELECT 1
+            //               FROM sys.columns
+            //               WHERE object_id = OBJECT_ID(@tbl) AND name = @col";
+            //    await using var cmd = new SqlCommand(q, cn);
+            //    cmd.Parameters.AddWithValue("@tbl", table);
+            //    cmd.Parameters.AddWithValue("@col", column);
+            //    var o = await cmd.ExecuteScalarAsync(ct2);
+            //    return o != null;
+            //}
 
-            var hasCreated = await HasColumnAsync(cn, "dbo.interviews", "created_at_utc", ct);
-            var hasUpdated = await HasColumnAsync(cn, "dbo.interviews", "updated_at_utc", ct);
+            //var hasCreated = await HasColumnAsync(cn, "dbo.interviews", "created_at_utc", ct);
+            //var hasUpdated = await HasColumnAsync(cn, "dbo.interviews", "updated_at_utc", ct);
 
             string sql;
-            if (hasCreated && hasUpdated)
-            {
-                sql = @"
-INSERT INTO dbo.interviews (id, patient_id, status, created_at_utc, updated_at_utc)
-VALUES (@id, @pid, @st, SYSUTCDATETIME(), SYSUTCDATETIME());";
-            }
-            else if (hasCreated) // solo created_at_utc
-            {
-                sql = @"
-INSERT INTO dbo.interviews (id, patient_id, status, created_at_utc)
-VALUES (@id, @pid, @st, SYSUTCDATETIME());";
-            }
-            else
-            {
-                sql = @"
-INSERT INTO dbo.interviews (id, patient_id, status)
-VALUES (@id, @pid, @st);";
-            }
+            //            if (hasCreated && hasUpdated)
+            //            {
+            //                sql = @"
+            //INSERT INTO dbo.interviews (id, patient_id, clinician_user_id, status, created_at_utc, updated_at_utc)
+            //VALUES (@id, @pid, @st, SYSUTCDATETIME(), SYSUTCDATETIME());";
+            //            }
+            //            else if (hasCreated) // solo created_at_utc
+            //            {
+            //                sql = @"
+            //INSERT INTO dbo.interviews (id, patient_id, clinician_user_id, status, created_at_utc)
+            //VALUES (@id, @pid, @st, SYSUTCDATETIME());";
+            //            }
+            //            else
+            //            {
+            //                sql = @"
+            //INSERT INTO dbo.interviews (id, patient_id, clinician_user_id, status)
+            //VALUES (@id, @pid, @st);";
+            //            }
+
+            sql = @"
+INSERT INTO dbo.interviews (id, patient_id, clinician_user_id, status)
+VALUES (@id, @pid, @cuid, @st);";
 
             await using (var cmd = new SqlCommand(sql, cn))
             {
                 cmd.Parameters.Add(new SqlParameter("@id", SqlDbType.UniqueIdentifier) { Value = id });
                 cmd.Parameters.Add(new SqlParameter("@pid", SqlDbType.UniqueIdentifier) { Value = patientId });
                 cmd.Parameters.Add(new SqlParameter("@st", SqlDbType.NVarChar, 50) { Value = "new" });
+                cmd.Parameters.Add(new SqlParameter("@cuid", SqlDbType.Int) { Value = clinicianUserId });
                 await cmd.ExecuteNonQueryAsync(ct);
             }
 
             return id;
+        }
+
+        public async Task<(IReadOnlyList<ClinicianInterviewRow> Items, int Total)> ListByClinicianAsync(
+            int clinicianUserId,
+            int page,
+            int pageSize,
+            string? status,
+            DateTime? fromUtc,
+            DateTime? toUtc,
+            string? search,
+            CancellationToken ct = default
+        )
+        {
+            var skip = (page - 1) * pageSize;
+
+            const string baseFilter = @"
+FROM dbo.interviews i
+LEFT JOIN dbo.patients p ON p.id = i.patient_id
+OUTER APPLY (
+  SELECT TOP (1) ia.duration_ms
+  FROM dbo.interview_audio ia
+  WHERE ia.interview_id = i.id
+  ORDER BY ia.created_at_utc DESC
+) aud
+WHERE i.clinician_user_id = @uid
+  AND (@st IS NULL OR i.status = @st)
+  AND (@fromUtc IS NULL OR ISNULL(i.started_at_utc, i.ended_at_utc) >= @fromUtc)
+  AND (@toUtc   IS NULL OR ISNULL(i.started_at_utc, i.ended_at_utc) <  @toUtc)
+  AND (
+        @q IS NULL
+        OR (
+            LTRIM(RTRIM(CONCAT(
+              COALESCE(NULLIF(p.first_name, ''), ''),
+              CASE WHEN NULLIF(p.last_name1,'') IS NULL THEN '' ELSE ' ' + p.last_name1 END,
+              CASE WHEN NULLIF(p.last_name2,'') IS NULL THEN '' ELSE ' ' + p.last_name2 END
+            ))) LIKE '%' + @q + '%'
+          )
+      )";
+
+            string selectSql = $@"
+SELECT
+  i.id,
+  i.patient_id,
+  LTRIM(RTRIM(CONCAT(
+      COALESCE(NULLIF(p.first_name, ''), ''),
+      CASE WHEN NULLIF(p.last_name1,'') IS NULL THEN '' ELSE ' ' + p.last_name1 END,
+      CASE WHEN NULLIF(p.last_name2,'') IS NULL THEN '' ELSE ' ' + p.last_name2 END
+  ))) AS patient_name,
+  i.started_at_utc,
+  i.ended_at_utc,
+  i.status,
+  aud.duration_ms
+{baseFilter}
+ORDER BY ISNULL(i.started_at_utc, i.ended_at_utc) DESC, i.id DESC
+OFFSET @skip ROWS FETCH NEXT @take ROWS ONLY;";
+
+            string countSql = $@"SELECT COUNT(1) {baseFilter};";
+
+            var items = new List<ClinicianInterviewRow>();
+            int total = 0;
+
+            await using var cn = new SqlConnection(_cs);
+            await cn.OpenAsync(ct);
+
+            await using (var cmdCount = new SqlCommand(countSql, cn))
+            {
+                cmdCount.Parameters.AddWithValue("@uid", clinicianUserId);
+                cmdCount.Parameters.AddWithValue("@st", (object?)status ?? DBNull.Value);
+                cmdCount.Parameters.AddWithValue("@fromUtc", (object?)fromUtc ?? DBNull.Value);
+                cmdCount.Parameters.AddWithValue("@toUtc", (object?)toUtc ?? DBNull.Value);
+                cmdCount.Parameters.AddWithValue("@q", (object?)search ?? DBNull.Value);
+                var o = await cmdCount.ExecuteScalarAsync(ct);
+                total = (o is int i) ? i : Convert.ToInt32(o);
+            }
+
+            await using (var cmd = new SqlCommand(selectSql, cn))
+            {
+                cmd.Parameters.AddWithValue("@uid", clinicianUserId);
+                cmd.Parameters.AddWithValue("@st", (object?)status ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("@fromUtc", (object?)fromUtc ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("@toUtc", (object?)toUtc ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("@q", (object?)search ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("@skip", skip);
+                cmd.Parameters.AddWithValue("@take", pageSize);
+
+                await using var rd = await cmd.ExecuteReaderAsync(ct);
+                while (await rd.ReadAsync(ct))
+                {
+                    var row = new ClinicianInterviewRow(
+                        rd.GetGuid(0),
+                        rd.GetGuid(1),
+                        rd.IsDBNull(2) ? null : rd.GetString(2),
+                        rd.IsDBNull(3) ? (DateTime?)null : rd.GetDateTime(3),
+                        rd.IsDBNull(4) ? (DateTime?)null : rd.GetDateTime(4),
+                        rd.IsDBNull(5) ? null : rd.GetString(5),
+                        rd.IsDBNull(6) ? (long?)null : rd.GetInt32(6)
+                    );
+                    items.Add(row);
+                }
+            }
+
+            return (items, total);
         }
 
 
