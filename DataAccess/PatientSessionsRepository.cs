@@ -25,7 +25,7 @@ namespace EPApi.DataAccess
         }
 
         public async Task<PagedResult<PatientSessionDto>> ListAsync(
-            Guid orgId, Guid patientId, int skip, int take, string? q, int? createdByUserId, CancellationToken ct)
+            Guid orgId, Guid patientId, int skip, int take, string? q, int? createdByUserId, bool isOwner, CancellationToken ct)
         {
             await using var conn = new SqlConnection(_connString);
             await conn.OpenAsync(ct);
@@ -33,16 +33,18 @@ namespace EPApi.DataAccess
             var sql = @"
 SELECT COUNT(1)
 FROM dbo.patient_sessions
-WHERE org_id = @org AND patient_id = @patient AND deleted_at_utc IS NULL
+WHERE patient_id = @patient AND deleted_at_utc IS NULL
   AND (@q IS NULL OR title LIKE @q OR content_text LIKE @q)
-  AND (@createdBy IS NULL OR created_by_user_id = @createdBy);
+  AND (@createdBy IS NULL OR created_by_user_id = @createdBy)
+  AND (@isOwner = 1 OR org_id = @org );
 
 SELECT id, patient_id, created_by_user_id, title, content_text, ai_tidy_text, ai_opinion_text,
        created_at_utc, updated_at_utc
 FROM dbo.patient_sessions
-WHERE org_id = @org AND patient_id = @patient AND deleted_at_utc IS NULL
+WHERE patient_id = @patient AND deleted_at_utc IS NULL
   AND (@q IS NULL OR title LIKE @q OR content_text LIKE @q)
   AND (@createdBy IS NULL OR created_by_user_id = @createdBy)
+  AND (@isOwner = 1 OR org_id = @org )
 ORDER BY updated_at_utc DESC, created_at_utc DESC
 OFFSET @skip ROWS FETCH NEXT @take ROWS ONLY;";
 
@@ -55,7 +57,7 @@ OFFSET @skip ROWS FETCH NEXT @take ROWS ONLY;";
             var qParam = q is null ? (object)DBNull.Value : $"%{q}%";
             cmd.Parameters.Add(new SqlParameter("@q", SqlDbType.NVarChar, 4000) { Value = qParam });
             cmd.Parameters.Add(new SqlParameter("@createdBy", SqlDbType.Int) { Value = (object?)createdByUserId ?? DBNull.Value });
-
+            cmd.Parameters.AddWithValue("@isOwner", isOwner ? 1 : 0);
             await using var reader = await cmd.ExecuteReaderAsync(ct);
             int total = 0;
             if (await reader.ReadAsync(ct))

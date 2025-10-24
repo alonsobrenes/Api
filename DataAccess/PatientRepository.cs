@@ -318,5 +318,58 @@ WHERE p.id = @id
             var n = await cmd.ExecuteNonQueryAsync(ct);
             return n > 0;
         }
+
+        public async Task<IReadOnlyList<PatientListItem>> GetPatientsByClinicianAsync(
+    Guid orgId,
+    int clinicianUserId,
+    CancellationToken ct = default)
+        {
+            const string SQL = @"
+SELECT
+  p.id,
+  p.identification_type, p.identification_number,
+  p.first_name, p.last_name1, p.last_name2,
+  p.date_of_birth, p.sex,
+  p.contact_email, p.contact_phone,
+  p.is_active, p.created_at, p.updated_at
+FROM dbo.patients p
+  INNER JOIN dbo.users AS u  
+    ON u.id = p.created_by_user_id
+INNER JOIN dbo.org_members AS om 
+   ON om.user_id = u.id 
+      AND om.org_id = @orgId
+WHERE p.created_by_user_id = @uid
+ORDER BY p.last_name1, p.last_name2, p.first_name;";
+
+            var list = new List<PatientListItem>();
+            await using var cn = new SqlConnection(_cs);
+            await cn.OpenAsync(ct);
+            await using var cmd = new SqlCommand(SQL, cn);
+            cmd.Parameters.Add(new SqlParameter("@orgId", SqlDbType.UniqueIdentifier) { Value = orgId });
+            cmd.Parameters.Add(new SqlParameter("@uid", SqlDbType.Int) { Value = clinicianUserId });
+
+            await using var rd = await cmd.ExecuteReaderAsync(ct);
+            while (await rd.ReadAsync(ct))
+            {
+                list.Add(new PatientListItem
+                {
+                    Id = rd.GetGuid(0),
+                    IdentificationType = rd.GetString(1),
+                    IdentificationNumber = rd.GetString(2),
+                    FirstName = rd.GetString(3),
+                    LastName1 = rd.GetString(4),
+                    LastName2 = rd.IsDBNull(5) ? null : rd.GetString(5),
+                    DateOfBirth = rd.IsDBNull(6) ? null : rd.GetDateTime(6),
+                    Sex = rd.IsDBNull(7) ? null : rd.GetString(7),
+                    ContactEmail = rd.IsDBNull(8) ? null : rd.GetString(8),
+                    ContactPhone = rd.IsDBNull(9) ? null : rd.GetString(9),
+                    IsActive = rd.GetBoolean(10),
+                    CreatedAt = rd.GetDateTime(11),
+                    UpdatedAt = rd.GetDateTime(12),
+                });
+            }
+
+            return list;
+        }
     }
 }

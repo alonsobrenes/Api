@@ -390,40 +390,44 @@ VALUES (@rid, @areas, @inter, @estr, @imp, @aj, @mad, @real, @expr);";
         // DataAccess/ClinicianReviewRepository.cs (dentro de la clase existente)
 
         // DataAccess/ClinicianReviewRepository.cs  (reemplaza el método completo)
-        public async Task<IReadOnlyList<PatientAssessmentRow>> ListAssessmentsByPatientAsync(
-            Guid patientId, int? ownerUserId, bool isAdmin, CancellationToken ct = default)
+        public async Task<IEnumerable<PatientAssessmentRow>> ListAssessmentsByPatientAsync(
+                 Guid patientId,
+                int? viewerUserId,
+                bool isOwner,
+                Guid? orgId,
+                CancellationToken ct = default)
         {
-            // NOTA: no usamos finished_at porque no existe en tu schema actual.
+            // NOTA: no usamos finished_at porque no existe en tu schema actual.            
             const string sql = @"
-SELECT
-    a.id             AS attempt_id,
-    a.patient_id     AS patient_id,
-    a.test_id        AS test_id,
-    t.code           AS test_code,
-    t.name           AS test_name,
-    t.scoring_mode   AS scoring_mode,
-    a.status         AS status,
-    a.started_at     AS started_at,
-    a.updated_at     AS updated_at,
-    CAST(
-      CASE 
-        WHEN a.status IN (
-            N'auto_done', N'done', N'completed', N'finished', N'reviewed', N'results_ready'
-        ) THEN 1
-        WHEN EXISTS (
-            SELECT 1
-            FROM dbo.attempt_reviews r
-            WHERE r.attempt_id = a.id AND r.is_final = 1
-        ) THEN 1
-        ELSE 0
-      END
-    AS bit)          AS is_final
-FROM dbo.test_attempts a
-JOIN dbo.tests    t ON t.id = a.test_id
-JOIN dbo.patients p ON p.id = a.patient_id
-WHERE a.patient_id = @patientId
-  AND (@isAdmin = 1 OR p.created_by_user_id = @ownerUserId)
-ORDER BY COALESCE(a.updated_at, a.started_at) DESC;";
+            SELECT
+                a.id             AS attempt_id,
+                a.patient_id     AS patient_id,
+                a.test_id        AS test_id,
+                t.code           AS test_code,
+                t.name           AS test_name,
+                t.scoring_mode   AS scoring_mode,
+                a.status         AS status,
+                a.started_at     AS started_at,
+                a.updated_at     AS updated_at,
+                CAST(
+                  CASE 
+                    WHEN a.status IN (
+                        N'auto_done', N'done', N'completed', N'finished', N'reviewed', N'results_ready'
+                    ) THEN 1
+                    WHEN EXISTS (
+                        SELECT 1
+                        FROM dbo.attempt_reviews r
+                        WHERE r.attempt_id = a.id AND r.is_final = 1
+                    ) THEN 1
+                    ELSE 0
+                  END
+                AS bit)          AS is_final
+            FROM dbo.test_attempts a
+            JOIN dbo.tests    t ON t.id = a.test_id
+            JOIN dbo.patients p ON p.id = a.patient_id
+            WHERE a.patient_id = @patientId
+              AND (@isOwner = 1 OR p.created_by_user_id = @ownerUserId)
+            ORDER BY COALESCE(a.updated_at, a.started_at) DESC;";
 
 
             var list = new List<PatientAssessmentRow>();
@@ -431,9 +435,11 @@ ORDER BY COALESCE(a.updated_at, a.started_at) DESC;";
             await using var con = new SqlConnection(_cs);
             await con.OpenAsync(ct);
             await using var cmd = new SqlCommand(sql, con);
+       
             cmd.Parameters.AddWithValue("@patientId", patientId);
-            cmd.Parameters.AddWithValue("@isAdmin", isAdmin ? 1 : 0);
-            cmd.Parameters.AddWithValue("@ownerUserId", (object?)ownerUserId ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@ownerUserId", (object?)viewerUserId ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@isOwner", isOwner ? 1 : 0);
+            cmd.Parameters.AddWithValue("@orgId", (object?)orgId ?? DBNull.Value);
 
             using var rd = await cmd.ExecuteReaderAsync(ct);
 

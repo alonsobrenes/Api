@@ -15,11 +15,19 @@ namespace EPApi.DataAccess
         /// <summary>Guarda la revisión (borrador o final) y actualiza estado del intento.</summary>
         Task<Guid> UpsertReviewAsync(Guid attemptId, ReviewUpsertInputDto dto, CancellationToken ct = default);
 
-        Task<IReadOnlyList<PatientAssessmentRow>> ListAssessmentsByPatientAsync(
-        Guid patientId,
-        int? ownerUserId,
-        bool isAdmin,
-        CancellationToken ct);
+        //Task<IReadOnlyList<PatientAssessmentRow>> ListAssessmentsByPatientAsync(
+        //Guid patientId,
+        //int? ownerUserId,
+        //bool isAdmin,
+        //CancellationToken ct);
+
+        Task<IEnumerable<PatientAssessmentRow>> ListAssessmentsByPatientAsync(
+     Guid patientId,
+    int? viewerUserId,      // el que mira (doctor u owner)
+    bool isOwner,           // dueño de la org
+    Guid? orgId,            // org actual, obligatorio si isOwner = true
+    CancellationToken ct = default);
+
 
         Task<bool> DeleteAttemptIfDraftAsync(Guid attemptId, int? ownerUserId, bool isAdmin, CancellationToken ct = default);
         Task<IReadOnlyList<AttemptAnswerRow>> GetAttemptAnswersAsync(
@@ -33,7 +41,7 @@ namespace EPApi.DataAccess
 
         
         Task<IReadOnlyList<PatientListItem>> ListRecentPatientsAsync(
-    int? ownerUserId, bool isAdmin, int take, CancellationToken ct = default);
+    int? ownerUserId, bool isOwner, int take, CancellationToken ct = default);
         Task<IReadOnlyList<TestTopItem>> ListTopTestsAsync(
     DateTime fromUtc, DateTime toUtc, int? ownerUserId, bool isAdmin, int take, CancellationToken ct = default);
         Task<TestBasicDto?> GetBasicForClinicianByIdAsync(Guid id, CancellationToken ct = default);

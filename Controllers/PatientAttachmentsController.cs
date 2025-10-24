@@ -3,6 +3,7 @@ using EPApi.DataAccess;
 using EPApi.Models;
 using EPApi.Services;
 using EPApi.Services.Billing;
+using EPApi.Services.Orgs;
 using EPApi.Services.Storage;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -32,6 +33,7 @@ namespace EPApi.Controllers
         private readonly IHashtagService _hashtag;
         private readonly string _cs;
         private readonly IUsageService _usage;
+        private readonly IOrgAccessService _orgAccess;
 
         // NUEVO: repo para leer suscripción/trial
         private readonly BillingRepository _billingRepo;
@@ -40,10 +42,10 @@ namespace EPApi.Controllers
             IStorageService storage,
             IOptions<StorageOptions> options,
             IConfiguration cfg,
-            // NUEVO: inyectamos el repo (ya existe en tu DI)
             BillingRepository billingRepo,
             IHashtagService hashtag,
-            IUsageService usage
+            IUsageService usage,
+            IOrgAccessService orgAccess
         )
         {
             _storage = storage;
@@ -53,17 +55,18 @@ namespace EPApi.Controllers
             _billingRepo = billingRepo;
             _hashtag = hashtag;
             _usage = usage;
+            _orgAccess = orgAccess;
         }
 
         // ===== Helpers =====
-        private int? GetCurrentUserId()
+        private int GetCurrentUserId()
         {
             // Same pattern used in PatientsController
             var raw = User.FindFirstValue("uid")
                    ?? User.FindFirstValue(ClaimTypes.NameIdentifier)
                    ?? User.FindFirstValue("sub");
             if (int.TryParse(raw, out var id)) return id;
-            return null;
+            return -1;
         }
 
         private Guid? TryGetOrgClaim()
@@ -151,7 +154,7 @@ WHERE p.id = @pid AND m.org_id = @org;";
         public async Task<IActionResult> List(Guid patientId, CancellationToken ct)
         {
             var userId = GetCurrentUserId();
-            if (userId is null) return Forbid();
+            if (userId == -1) return Forbid();
 
             // En List estás usando OrgResolver centralizado; respetamos eso
             var orgId = Shared.OrgResolver.GetOrgIdOrThrow(Request, User);
@@ -159,7 +162,10 @@ WHERE p.id = @pid AND m.org_id = @org;";
             if (!await PatientBelongsToOrgAsync(patientId, orgId, ct))
                 return NotFound(new { message = "Paciente no pertenece a su organización. " + "patientID: " + patientId.ToString() + ", orgID= " + orgId.ToString() });
 
-            var items = await _storage.ListAsync(orgId, patientId, ct);
+            var isOwner = await _orgAccess
+            .IsOwnerOfMultiSeatOrgAsync(userId, orgId, ct);
+
+            var items = await _storage.ListAsync(orgId, patientId, isOwner, ct);
             return Ok(items);
         }
 
@@ -169,7 +175,7 @@ WHERE p.id = @pid AND m.org_id = @org;";
         public async Task<IActionResult> Upload(Guid patientId, [FromForm] IFormFile file, [FromForm] string? comment, CancellationToken ct)
         {
             var userId = GetCurrentUserId();
-            if (userId is null) return Forbid();
+            if (userId == -1) return Forbid();
 
             if (file is null || file.Length == 0)
                 return BadRequest(new { message = "Archivo requerido." });
@@ -237,7 +243,7 @@ WHERE p.id = @pid AND m.org_id = @org;";
         public async Task<IActionResult> Delete(Guid fileId, CancellationToken ct)
         {
             var userId = GetCurrentUserId();
-            if (userId is null) return Forbid();
+            if (userId == -1) return Forbid();
 
                // Resolver org del request (mismo patrón que List/Upload)
             var orgId = Shared.OrgResolver.GetOrgIdOrThrow(Request, User);

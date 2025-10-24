@@ -3,6 +3,7 @@ using EPApi.DataAccess;
 using EPApi.Models;
 using EPApi.Services;                 // IAiAssistantService, AiOpinionPromptBuilder (ya existe)
 using EPApi.Services.Billing;         // IUsageService
+using EPApi.Services.Orgs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
@@ -21,8 +22,9 @@ namespace EPApi.Controllers
         private readonly ILogger<PatientSessionsController> _logger;
         private readonly IUsageService _usage;
         private readonly BillingRepository _billing;
-        private readonly IAiAssistantService _ai; // NUEVO: igual que en ClinicianAttempts
+        private readonly IAiAssistantService _ai; 
         private readonly IHashtagService? _hashtag;
+        private readonly IOrgAccessService _orgAccess;
 
         public PatientSessionsController(
             IPatientSessionsRepository repo,
@@ -31,7 +33,8 @@ namespace EPApi.Controllers
             IUsageService usage,
             BillingRepository billing,
             IAiAssistantService ai,
-            IHashtagService hashtag
+            IHashtagService hashtag,
+            IOrgAccessService orgAccess
         )
         {
             _repo = repo;
@@ -41,6 +44,7 @@ namespace EPApi.Controllers
             _billing = billing;
             _ai = ai;
             _hashtag = hashtag;
+            _orgAccess = orgAccess;
         }
 
         private int RequireUserId()
@@ -72,7 +76,12 @@ namespace EPApi.Controllers
             CancellationToken ct = default)
         {
             var orgId = GetOrgIdOrThrow();
-            var result = await _repo.ListAsync(orgId, patientId, skip, take, q, createdByUserId, ct);
+            var userId = RequireUserId();
+
+            var isOwner = await _orgAccess
+            .IsOwnerOfMultiSeatOrgAsync(userId, orgId, ct);
+
+            var result = await _repo.ListAsync(orgId, patientId, skip, take, q, createdByUserId, isOwner, ct);
             return Ok(result);
         }
 

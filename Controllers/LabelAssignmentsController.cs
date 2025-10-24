@@ -1,8 +1,11 @@
 ﻿using EPApi.DataAccess;
+using EPApi.Models;
+using EPApi.Services.Orgs;
 using EPApi.Utils;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.ComponentModel.DataAnnotations;
+using System.Security.Claims;
 
 namespace EPApi.Controllers
 {
@@ -12,7 +15,21 @@ namespace EPApi.Controllers
     public sealed class LabelAssignmentsController : ControllerBase
     {
         private readonly LabelAssignmentsRepository _repo;
-        public LabelAssignmentsController(LabelAssignmentsRepository repo) => _repo = repo;
+        private readonly IOrgAccessService _orgAccess;
+
+        public LabelAssignmentsController(LabelAssignmentsRepository repo,
+                                          IOrgAccessService orgAccess) { 
+            _repo = repo;
+            _orgAccess = orgAccess;
+        }
+
+        private int RequireUserId()
+        {
+            var idStr = User.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                     ?? User.FindFirst("http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier")?.Value;
+            if (!int.TryParse(idStr, out var uid)) throw new UnauthorizedAccessException("No user id");
+            return uid;
+        }
 
         public sealed class AssignInput
         {
@@ -89,13 +106,18 @@ namespace EPApi.Controllers
             if (string.IsNullOrWhiteSpace(targetType)) return BadRequest("type requerido");
 
             var orgId = Shared.OrgResolver.GetOrgIdOrThrow(Request, User);
-           
+            var userId = RequireUserId();
             var okType = SupportedEntityTypes.IsSupported(targetType);
+            
             if (!okType) return BadRequest("type no soportado");
+
+            var isOwner = await _orgAccess
+            .IsOwnerOfMultiSeatOrgAsync(userId, orgId, ct);
+
 
             if (Guid.TryParse(id, out var gid))
             {
-                var rows = await _repo.ListForTargetAsync(orgId, type, gid, ct);
+                var rows = await _repo.ListForTargetAsync(orgId, type, gid, isOwner, ct);
                 var items = rows.Select(r => new LabelsController.LabelDto
                 {
                     Id = r.Id,
@@ -109,7 +131,7 @@ namespace EPApi.Controllers
             }
             if (int.TryParse(id, out var iid))
             {
-                var rows = await _repo.ListForTargetIntAsync(orgId, type, iid, ct);
+                var rows = await _repo.ListForTargetIntAsync(orgId, type, iid, isOwner, ct);
                 var items = rows.Select(r => new LabelsController.LabelDto
                 {
                     Id = r.Id,

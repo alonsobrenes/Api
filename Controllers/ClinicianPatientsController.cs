@@ -1,8 +1,9 @@
 ﻿// Controllers/ClinicianPatientsController.cs
-using System.Security.Claims;
 using EPApi.DataAccess;
+using EPApi.Services.Orgs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using System.Security.Claims;
 
 namespace EPApi.Controllers
 {
@@ -12,30 +13,46 @@ namespace EPApi.Controllers
     public sealed class ClinicianPatientsController : ControllerBase
     {
         private readonly IClinicianReviewRepository _repo;
-        public ClinicianPatientsController(IClinicianReviewRepository repo) => _repo = repo;
+        private readonly IPatientRepository _patients;
+        private readonly IOrgAccessService _orgAccess;
 
-        private int? GetCurrentUserId()
+        public ClinicianPatientsController(
+        IClinicianReviewRepository repo,
+        IPatientRepository patients,
+        IOrgAccessService orgAccess)
+        {
+            _repo = repo;
+            _patients = patients;
+            _orgAccess = orgAccess;
+        }
+
+        private int GetCurrentUserId()
         {
             var raw = User.FindFirstValue("uid")
                    ?? User.FindFirstValue(ClaimTypes.NameIdentifier)
+                   ?? User.FindFirstValue("http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier")
                    ?? User.FindFirstValue("sub");
-            return int.TryParse(raw, out var id) ? id : null;
+            return int.TryParse(raw, out var id) ? id : -1;
         }
 
-        private bool IsAdmin()
+        private Guid RequireOrgId()
         {
-            if (User.IsInRole("Admin")) return true;
-            var role = User.FindFirstValue(ClaimTypes.Role);
-            return string.Equals(role, "Admin", StringComparison.OrdinalIgnoreCase);
+            if (!Request.Headers.TryGetValue("x-org-id", out var v) || !Guid.TryParse(v, out var orgId))
+                throw new InvalidOperationException("x-org-id missing/invalid");
+            return orgId;
         }
 
         // GET /api/clinician/patients/recent?take=5
         [HttpGet("recent")]
         public async Task<IActionResult> GetRecent([FromQuery] int take = 5, CancellationToken ct = default)
         {
-            var ownerUserId = GetCurrentUserId();   // reutiliza tu helper existente
-            var isAdmin = IsAdmin();                // idem
-            var items = await _repo.ListRecentPatientsAsync(ownerUserId, isAdmin, take, ct);
+            var orgId = RequireOrgId();
+            var userId = GetCurrentUserId();
+
+            var isOwner = await _orgAccess
+            .IsOwnerOfMultiSeatOrgAsync(userId, orgId, ct);
+
+            var items = await _repo.ListRecentPatientsAsync(userId, isOwner, take, ct);
             return Ok(items); // lista simple [{ id, firstName, lastName1, ... }]
         }
 
@@ -49,10 +66,40 @@ namespace EPApi.Controllers
         [HttpGet("{patientId:guid}/attempts")] // alias de compatibilidad
         public async Task<IActionResult> GetAssessments(Guid patientId, CancellationToken ct)
         {
-            var ownerUserId = GetCurrentUserId();
-            var isAdmin = IsAdmin();
 
-            var items = await _repo.ListAssessmentsByPatientAsync(patientId, ownerUserId, isAdmin, ct);
+            var orgId = RequireOrgId();
+            var userId = GetCurrentUserId();
+
+            var isOwner = await _orgAccess
+            .IsOwnerOfMultiSeatOrgAsync(userId, orgId, ct);
+
+            if (isOwner && orgId == null)
+                return Forbid();
+
+            var items = await _repo.ListAssessmentsByPatientAsync(
+                patientId: patientId,
+                viewerUserId: userId,
+                isOwner: isOwner,
+                orgId: orgId, 
+                ct: ct
+            );
+            
+            return Ok(new { items });
+        }
+
+        [HttpGet("by-clinician/{userId:int}")]
+        public async Task<IActionResult> GetPatientsByClinician(int userId, CancellationToken ct = default)
+        {
+            var callerUserId = GetCurrentUserId();
+            if (callerUserId == -1) return Forbid();
+
+            var orgId = RequireOrgId();
+
+            var isOwnerMulti = await _orgAccess.IsOwnerOfMultiSeatOrgAsync(callerUserId, orgId, ct);
+
+            if (!isOwnerMulti) return Forbid();
+
+            var items = await _patients.GetPatientsByClinicianAsync(orgId, userId, ct);
             return Ok(new { items });
         }
     }
