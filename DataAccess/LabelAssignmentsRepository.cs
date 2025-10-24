@@ -117,13 +117,13 @@ WHERE org_id=@org AND label_id=@lid AND target_type=@typ AND target_id_guid=@tid
             return true;
         }
 
-        public async Task<IReadOnlyList<LabelsRepository.LabelRow>> ListForTargetAsync(Guid orgId, string targetType, Guid targetId, CancellationToken ct = default)
+        public async Task<IReadOnlyList<LabelsRepository.LabelRow>> ListForTargetAsync(Guid orgId, string targetType, Guid targetId, bool isOwner, CancellationToken ct = default)
         {
             const string sql = @"
 SELECT l.id, l.org_id, l.code, l.name, l.color_hex, l.is_system, l.created_at_utc
 FROM dbo.label_assignments la
 JOIN dbo.labels l ON l.id = la.label_id AND l.org_id = la.org_id
-WHERE la.org_id = @org AND la.target_type = @typ AND la.target_id_guid = @tid
+WHERE (@isOwner = 1 OR la.org_id = @org ) AND la.target_type = @typ AND la.target_id_guid = @tid
 ORDER BY l.name;";
 
             var list = new List<LabelsRepository.LabelRow>(16);
@@ -133,6 +133,7 @@ ORDER BY l.name;";
             cmd.Parameters.Add(new SqlParameter("@org", SqlDbType.UniqueIdentifier) { Value = orgId });
             cmd.Parameters.Add(new SqlParameter("@typ", SqlDbType.NVarChar, 32) { Value = targetType });
             cmd.Parameters.Add(new SqlParameter("@tid", SqlDbType.UniqueIdentifier) { Value = targetId });
+            cmd.Parameters.AddWithValue("@isOwner", isOwner ? 1 : 0);
 
             await using var rd = await cmd.ExecuteReaderAsync(ct);
             while (await rd.ReadAsync(ct))
@@ -254,13 +255,13 @@ WHERE org_id=@org AND label_id=@lid AND target_type=@typ AND target_id_int=@tid;
             await cmd.ExecuteNonQueryAsync(ct);
         }
 
-        public async Task<IReadOnlyList<LabelsRepository.LabelRow>> ListForTargetIntAsync(Guid orgId, string targetType, int targetIdInt, CancellationToken ct = default)
+        public async Task<IReadOnlyList<LabelsRepository.LabelRow>> ListForTargetIntAsync(Guid orgId, string targetType, int targetIdInt, bool isOwner, CancellationToken ct = default)
         {
             const string sql = @"
 SELECT l.id, l.org_id, l.code, l.name, l.color_hex, l.is_system, l.created_at_utc
 FROM dbo.label_assignments la
 JOIN dbo.labels l ON l.id = la.label_id AND l.org_id = la.org_id
-WHERE la.org_id = @org AND la.target_type = @typ AND la.target_id_int = @tid
+WHERE (@isOwner = 1 OR la.org_id = @org ) AND la.target_type = @typ AND la.target_id_int = @tid
 ORDER BY l.name;";
 
             var list = new List<LabelsRepository.LabelRow>(16);
@@ -270,6 +271,7 @@ ORDER BY l.name;";
             cmd.Parameters.Add(new SqlParameter("@org", SqlDbType.UniqueIdentifier) { Value = orgId });
             cmd.Parameters.Add(new SqlParameter("@typ", SqlDbType.NVarChar, 32) { Value = targetType });
             cmd.Parameters.Add(new SqlParameter("@tid", SqlDbType.Int) { Value = targetIdInt });
+            cmd.Parameters.AddWithValue("@isOwner", isOwner ? 1 : 0);
 
             await using var rd = await cmd.ExecuteReaderAsync(ct);
             while (await rd.ReadAsync(ct))

@@ -1,4 +1,5 @@
 ﻿using EPApi.Models;
+using Microsoft.AspNetCore.Mvc;
 
 namespace EPApi.DataAccess
 {
@@ -35,5 +36,9 @@ namespace EPApi.DataAccess
 
         // ===== Eliminar (con propietario) =====
         Task<bool> DeleteAsync(Guid id, int? ownerUserId, bool isAdmin, CancellationToken ct = default);
+        
+        Task<IReadOnlyList<PatientListItem>> GetPatientsByClinicianAsync(Guid orgId, int clinicianUserId, CancellationToken ct = default);
+        
+
     }
 }

@@ -237,11 +237,12 @@ WHERE file_id = @id AND deleted_at_utc IS NULL;";
             return (fs, ctype, name);
         }
 
-        public async Task<IReadOnlyList<PatientFileDto>> ListAsync(Guid orgId, Guid patientId, CancellationToken ct)
+        public async Task<IReadOnlyList<PatientFileDto>> ListAsync(Guid orgId, Guid patientId, bool isOwner, CancellationToken ct)
         {
             const string SQL = @"SELECT file_id, original_name, content_type, byte_size, uploaded_at_utc, comment, deleted_at_utc
 FROM dbo.patient_files
-WHERE org_id = @org AND patient_id = @pat
+WHERE patient_id = @pat
+     AND (@isOwner = 1 OR org_id = @org)
 ORDER BY uploaded_at_utc DESC;";
 
             var list = new List<PatientFileDto>();
@@ -250,6 +251,7 @@ ORDER BY uploaded_at_utc DESC;";
             await using var cmd = new SqlCommand(SQL, cn);
             cmd.Parameters.Add(new SqlParameter("@org", SqlDbType.UniqueIdentifier) { Value = orgId });
             cmd.Parameters.Add(new SqlParameter("@pat", SqlDbType.UniqueIdentifier) { Value = patientId });
+            cmd.Parameters.AddWithValue("@isOwner", isOwner ? 1 : 0);
 
             await using var rd = await cmd.ExecuteReaderAsync(ct);
             while (await rd.ReadAsync(ct))

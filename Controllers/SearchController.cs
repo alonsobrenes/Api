@@ -76,10 +76,7 @@ namespace EPApi.Controllers
             var userId = RequireUserId();
             var allowProfessionals = await _orgAccess
             .IsOwnerOfMultiSeatOrgAsync(userId, orgId, ct);
-            _log.LogDebug("Suggest allowProfessionals={Allow}", allowProfessionals);
-
-            //if (limit <= 0 || limit > 50) limit = 10;
-            //var lim = Math.Clamp(limit ?? 10, 1, 25);
+            
             var lim = Math.Clamp(limit, 1, 25);
             var res = await _svc.SuggestAsync(orgId, q ?? string.Empty, limit, allowProfessionals, ct);
             return Ok(res);

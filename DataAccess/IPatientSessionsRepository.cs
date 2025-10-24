@@ -12,7 +12,7 @@ namespace EPApi.DataAccess
     public interface IPatientSessionsRepository
     {
         Task<PagedResult<PatientSessionDto>> ListAsync(
-            Guid orgId, Guid patientId, int skip, int take, string? q, int? createdByUserId, CancellationToken ct);
+            Guid orgId, Guid patientId, int skip, int take, string? q, int? createdByUserId, bool isOwner, CancellationToken ct);
 
         Task<PatientSessionDto> GetAsync(Guid orgId, Guid patientId, Guid id, CancellationToken ct);
 
