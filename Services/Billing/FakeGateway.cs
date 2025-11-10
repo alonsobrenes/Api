@@ -1,11 +1,12 @@
 ﻿// Services/Billing/FakeGateway.cs
-using System.Text.Json;
+using EPApi.Models;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
+using System.Text.Json;
 
 namespace EPApi.Services.Billing
 {
-    
+
     /// <summary>
     /// Pasarela "fake" para desarrollo/QA: no cobra nada.
     /// - CreateCheckoutSession: devuelve una URL simulada que podrías abrir en FE.
@@ -16,6 +17,7 @@ namespace EPApi.Services.Billing
     {
         private readonly Guid? _devOrgId;
         private readonly string _returnBase;
+        private readonly IConfiguration _cfg;
 
         private Guid ParseOrgId(string? raw)
         {
@@ -49,6 +51,7 @@ namespace EPApi.Services.Billing
 
         public FakeGateway(IConfiguration cfg)
         {
+            _cfg = cfg;
             _returnBase = cfg["Billing:ReturnUrlBase"] ?? "http://localhost:5173";
             var dev = cfg["Billing:DevOrgId"] ?? cfg["Auth:DevOrgId"]; // fallback dev org for tests
             if (Guid.TryParse(dev, out var g)) _devOrgId = g;
@@ -57,9 +60,59 @@ namespace EPApi.Services.Billing
         public Task<string> CreateCheckoutSession(Guid orgId, string planCode, string returnUrl, CancellationToken ct)
         {
             // En una pasarela real redirigirías a Paddle/TiloPay.
-            // Acá devolvemos una "URL de checkout" de mentira (podés reemplazar por una mini-página tuya).
-            var url = $"{_returnBase}/checkout/fake?org={orgId}&plan={Uri.EscapeDataString(planCode)}&return={Uri.EscapeDataString(returnUrl)}";
+            //// Acá devolvemos una "URL de checkout" de mentira (podés reemplazar por una mini-página tuya).
+            //var url = $"{_returnBase}/checkout/fake?org={orgId}&plan={Uri.EscapeDataString(planCode)}&return={Uri.EscapeDataString(returnUrl)}";
+            //return Task.FromResult(url);
+
+
+            // Queremos usar el hosted checkout simulado dentro del backend:
+            // GET /api/billing/sim-checkout?planCode=...&returnUrl=...
+
+            // Intentamos tomar el origen del backend de settings; si no existe, usamos el host local por defecto.
+            var backendOrigin = _cfg["Billing:BackendBase"]?.TrimEnd('/');
+            if (string.IsNullOrWhiteSpace(backendOrigin))
+            {
+                // fallback razonable en dev
+                backendOrigin = "https://localhost:53793";
+            }
+
+            // Construimos la URL del hosted simulado
+            var url = $"{backendOrigin}/api/billing/sim-checkout" +
+                    $"?planCode={Uri.EscapeDataString(planCode)}" +
+                    $"&returnUrl={Uri.EscapeDataString(returnUrl)}" +
+                    $"&org={orgId}";
+
             return Task.FromResult(url);
+        }
+
+        public Task<string> CreateTokenizationSessionAsync(Guid orgId, string returnUrl, CancellationToken ct)
+        {
+            var backendOrigin = _cfg["Billing:BackendBase"]?.TrimEnd('/');
+            if (string.IsNullOrWhiteSpace(backendOrigin))
+            {
+                backendOrigin = "https://localhost:53793";
+            }
+
+            var url = $"{backendOrigin}/api/billing/sim-tokenize" +
+                      $"?returnUrl={Uri.EscapeDataString(returnUrl)}" +
+                      $"&org={orgId}";
+
+            return Task.FromResult(url);
+        }
+
+        public Task<PaymentMethodDetails?> TryFetchPaymentMethodDetailsAsync(string providerPmId, CancellationToken ct)
+        {
+            // Simula que el token tiene detalles de tarjeta (útil para FE y para BE que enriquece la fila).
+            // Si quieres “forzar” null para probar el camino sin detalles, retorna Task.FromResult<PaymentMethodDetails?>(null).
+            var details = new PaymentMethodDetails
+            {
+                Brand = "VISA",
+                Last4 = "4242",
+                ExpMonth = 12,
+                ExpYear = 2030,
+                RawProviderPayload = $@"{{ ""token"": ""{providerPmId}"", ""brand"": ""VISA"", ""last4"": ""4242"", ""expMonth"": 12, ""expYear"": 2030 }}"
+            };
+            return Task.FromResult<PaymentMethodDetails?>(details);
         }
 
         public Task<string> GetCustomerPortalUrl(Guid orgId, CancellationToken ct)
@@ -113,7 +166,15 @@ namespace EPApi.Services.Billing
             }
             return list;
         }
+
+        public async Task<string> CreateRepeatPlanAsync(BillingPlanDto plan, CancellationToken ct)
+        {
+            return "mock_plan_12345";
+        }
+        public async Task<(string? registerUrl, string? renewUrl, string rawJson)>
+        GetRecurrentUrlAsync(string providerPlanId, string email, CancellationToken ct)
+        {
+            return (null, null, "{}");
+        }
     }
-
-
 }

@@ -75,5 +75,28 @@ WHERE m.org_id = @org
             var mode = await GetOrgModeAsync(orgId, ct);
             return mode == OrgMode.Multi;
         }
+
+        public async Task<bool> IsOwnerAsync(int userId, CancellationToken ct = default)
+        {
+            const string sqlOwner = @"
+SELECT 1
+FROM dbo.org_members m
+WHERE m.user_id = @uid
+  AND m.role = 'editor';";
+
+            await using var cn = new SqlConnection(_cs);
+            await cn.OpenAsync(ct);
+
+            bool isOwner;
+            await using (var cmd = new SqlCommand(sqlOwner, cn))
+            {                
+                cmd.Parameters.Add(new SqlParameter("@uid", SqlDbType.Int) { Value = userId });
+
+                var obj = await cmd.ExecuteScalarAsync(ct);
+                isOwner = obj == null;
+            }
+
+            return isOwner;            
+        }
     }
 }

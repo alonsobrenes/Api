@@ -16,6 +16,8 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using EPApi.Services.Search;
+using Polly;
+using Polly.Extensions.Http; 
 
 var builder = WebApplication.CreateBuilder(args);
 const string CorsPolicy = "VitePolicy";
@@ -54,6 +56,8 @@ var jwtKey = builder.Configuration["Jwt:Key"] ?? "dev-secret-key-change-me-pleas
 var jwtIssuer = builder.Configuration["Jwt:Issuer"] ?? "EPApi";
 var jwtAudience = builder.Configuration["Jwt:Audience"] ?? "EPApiAudience";
 var jwtExpireMinutes = int.TryParse(builder.Configuration["Jwt:ExpireMinutes"], out var exp) ? exp : 60;
+var billingMode = builder.Configuration["Billing:Mode"] ?? "Simulated";
+var billingGw = builder.Configuration["Billing:Gateway"] ?? "Fake";
 
 builder.Services.AddAuthentication(options =>
 {
@@ -108,8 +112,8 @@ builder.Services.AddScoped<IInterviewDraftService, InterviewDraftService>();
 builder.Services.AddSingleton<IAiAssistantService, OpenAiAssistantService>();
 builder.Services.AddSingleton<BillingRepository>();
 builder.Services.AddSingleton<IUsageService, SqlUsageService>();
-builder.Services.AddSingleton<IBillingGateway, FakeGateway>();
-builder.Services.AddSingleton<BillingOrchestrator>();
+builder.Services.AddScoped<IOrgBillingProfileRepository, OrgBillingProfileRepository>();
+builder.Services.AddScoped<BillingOrchestrator>();
 builder.Services.Configure<StorageOptions>(builder.Configuration.GetSection("Storage"));
 builder.Services.Configure<StorageArchiveOptions>(builder.Configuration.GetSection("Storage:Archive"));
 builder.Services.AddScoped<ITrialProvisioner, TrialProvisioner>();
@@ -123,11 +127,38 @@ builder.Services.AddScoped<HashtagsRepository>();
 builder.Services.AddScoped<IHashtagService, HashtagService>();
 builder.Services.AddScoped<IPatientSessionsRepository, PatientSessionsRepository>();
 builder.Services.AddScoped<ISearchService, SearchService>();
-builder.Services.AddSingleton<IEmailSender, SmtpEmailSender>();
-builder.Services.AddSingleton<IOrgAccessService, OrgAccessService>();
+builder.Services.AddScoped<IEmailSender, SmtpEmailSender>();
+builder.Services.AddScoped<IOrgAccessService, OrgAccessService>();
+builder.Services.AddScoped<IPaymentsRepository, SqlPaymentsRepository>();
 
 
+builder.Services.AddScoped<IOrgRepository, OrgRepository > ();
+builder.Services.AddScoped<IPaymentMethodRepository, SqlPaymentMethodRepository>();
+builder.Services.AddScoped<IPaymentMethodTokenizeContextProvider, DefaultPaymentMethodTokenizeContextProvider>();
+builder.Services.AddScoped<IPaymentsRepository, SqlPaymentsRepository>();
+builder.Services.AddSingleton<ITiloPayAuthTokenProvider, TiloPayAuthTokenProvider>();
 
+
+builder.Services.AddHttpClient("TiloPay.SafeClient", c => { c.Timeout = TimeSpan.FromSeconds(30); })
+    .AddTransientHttpErrorPolicy(p => p.WaitAndRetryAsync(new[]
+    {
+        TimeSpan.FromMilliseconds(200),
+        TimeSpan.FromMilliseconds(500),
+        TimeSpan.FromSeconds(1)
+    }));
+builder.Services.AddHttpClient("TiloPay.PaymentClient", c => { c.Timeout = TimeSpan.FromSeconds(30); }); // sin retry global
+builder.Services.AddScoped<IBillingGateway, TiloPayGateway>();
+builder.Services.AddHttpClient("TiloPay", c => { c.Timeout = TimeSpan.FromSeconds(30); });
+
+if (string.Equals(billingMode, "Gateway", StringComparison.OrdinalIgnoreCase) &&
+    string.Equals(billingGw, "TiloPay", StringComparison.OrdinalIgnoreCase))
+{
+    builder.Services.AddScoped<IBillingGateway, TiloPayGateway>();
+}
+else
+{
+    builder.Services.AddScoped<IBillingGateway, FakeGateway>();
+}
 
 builder.Services.AddMemoryCache();
 
@@ -141,8 +172,9 @@ builder.Services
       o.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
   });
 
-
 builder.Services.AddHttpClient();
+
+
 //builder.Services.AddScoped<ITranscriptionService>(sp =>
 //    new CompositeTranscriptionService(
 //        sp.GetRequiredService<WhisperTranscriptionService>(),

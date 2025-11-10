@@ -22,5 +22,7 @@ namespace EPApi.Services.Orgs
         /// True si el usuario es OWNER en org_members y la org es Multi (seats > 1).
         /// </summary>
         Task<bool> IsOwnerOfMultiSeatOrgAsync(int userId, Guid orgId, CancellationToken ct = default);
+
+        Task<bool> IsOwnerAsync(int userId, CancellationToken ct = default);
     }
 }

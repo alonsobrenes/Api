@@ -1,8 +1,9 @@
+using EPApi.Models;
+using EPApi.Services.Orgs;
+using Microsoft.IdentityModel.Tokens;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
-using EPApi.Models;
-using Microsoft.IdentityModel.Tokens;
 
 namespace EPApi.Services
 {
@@ -12,18 +13,18 @@ namespace EPApi.Services
         private readonly string _issuer;
         private readonly string _audience;
         private readonly TimeSpan _expiry;
-
+        
         public JwtTokenService(string key, string issuer, string audience, TimeSpan expiry)
         {
             _key = key;
             _issuer = issuer;
             _audience = audience;
-            _expiry = expiry;
+            _expiry = expiry;            
         }
 
-        public string GenerateToken(User user, Guid? orgId = null)
+        public string GenerateToken(User user, Guid? orgId = null, bool? isOwner = false)
         {
-            var role = (user.Role ?? "viewer").ToLowerInvariant();
+            var role = (bool)isOwner ? user.Role.ToLowerInvariant() : "viewer";
 
             var claims = new List<Claim>
             {
@@ -33,9 +34,9 @@ namespace EPApi.Services
                 new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
             };
 
-            if (orgId.HasValue)
-                claims.Add(new Claim("org_id", orgId.Value.ToString()));
-
+            if (orgId!=null)
+                claims.Add(new Claim("org_id", orgId.ToString()));
+          
             var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_key));
             var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
 
