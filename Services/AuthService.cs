@@ -1,4 +1,6 @@
 using EPApi.DataAccess;
+using EPApi.Models;
+using EPApi.Services.Orgs;
 
 namespace EPApi.Services
 {
@@ -8,13 +10,15 @@ namespace EPApi.Services
         private readonly IPasswordHasher _hasher;
         private readonly IJwtTokenService _jwt;
         private readonly BillingRepository _billing;
+        private readonly IOrgAccessService _orgAccess;
 
-        public AuthService(IUserRepository users, IPasswordHasher hasher, IJwtTokenService jwt, BillingRepository billing)
+        public AuthService(IUserRepository users, IPasswordHasher hasher, IJwtTokenService jwt, BillingRepository billing, IOrgAccessService orgAccess)
         {
             _users = users;
             _hasher = hasher;
             _jwt = jwt;
             _billing = billing;
+            _orgAccess = orgAccess;
         }
 
         public async Task<string?> LoginAsync(string email, string password, CancellationToken ct = default)
@@ -23,8 +27,13 @@ namespace EPApi.Services
             if (user is null) return null;
             if (!_hasher.Verify(password, user.PasswordHash)) return null;
             var orgId = await _billing.GetOrgIdForUserAsync(user.Id, ct);
+            var isOwner = true;
 
-            return _jwt.GenerateToken(user, orgId);
+            if (user.Role != "admin") { 
+                isOwner = await _orgAccess.IsOwnerAsync(user.Id);
+            }
+
+            return _jwt.GenerateToken(user, orgId,isOwner);
         }
     }
 }

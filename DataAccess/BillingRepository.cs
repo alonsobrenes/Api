@@ -1,5 +1,6 @@
 ﻿// DataAccess/BillingRepository.cs
 using EPApi.Controllers;
+using EPApi.Models;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
 using System.Data;
@@ -299,6 +300,63 @@ LEFT JOIN dbo.billing_plan_entitlements e
             return null;
         }
 
+        public async Task<int?> ResolveSeatsForPlanAsync(string planCode, CancellationToken ct)
+        {
+            var ents = await GetEntitlementsByPlanCodeAsync(planCode, ct);
+            if (ents.TryGetValue("seats", out var v))
+                return v;
+            return null; // si el plan no define seats explícito
+        }
 
+        public async Task<BillingPlanDto?> GetPlanByCodeAsync(string code, CancellationToken ct)
+        {
+            const string sql = @"
+SELECT id, code, name, description, period, is_active, is_public, trial_days, currency, price_amount_cents,
+       provider, provider_price_id
+FROM dbo.billing_plans
+WHERE code = @code;";
+
+            await using var cn = new SqlConnection(_cs);
+            await cn.OpenAsync(ct);
+            await using var cmd = new SqlCommand(sql, cn);
+            cmd.Parameters.AddWithValue("@code", code);
+
+            await using var rd = await cmd.ExecuteReaderAsync(ct);
+            if (!await rd.ReadAsync(ct)) return null;
+
+            return new BillingPlanDto
+            {
+                Id = rd.GetGuid(0),
+                Code = rd.GetString(1),
+                Name = rd.GetString(2),
+                Description = rd.IsDBNull(3) ? null : rd.GetString(3),
+                Period = rd.GetString(4),
+                IsActive = rd.GetBoolean(5),
+                IsPublic = rd.GetBoolean(6),
+                TrialDays = rd.GetInt32(7),
+                Currency = rd.GetString(8),
+                PriceAmountCents = rd.GetInt32(9),
+                Provider = rd.IsDBNull(10) ? null : rd.GetString(10),
+                ProviderPriceId = rd.IsDBNull(11) ? null : rd.GetString(11)
+            };
+        }
+
+        public async Task<int> UpdatePlanProviderMappingAsync(string code, string provider, string providerPriceId, CancellationToken ct)
+        {
+            const string sql = @"
+UPDATE dbo.billing_plans
+SET provider = @prov,
+    provider_price_id = @ppid,
+    updated_at_utc = SYSUTCDATETIME()
+WHERE code = @code;";
+
+            await using var cn = new SqlConnection(_cs);
+            await cn.OpenAsync(ct);
+            await using var cmd = new SqlCommand(sql, cn);
+            cmd.Parameters.AddWithValue("@prov", provider);
+            cmd.Parameters.AddWithValue("@ppid", providerPriceId);
+            cmd.Parameters.AddWithValue("@code", code);
+            return await cmd.ExecuteNonQueryAsync(ct);
+        }
     }
 }

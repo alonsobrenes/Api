@@ -1,5 +1,6 @@
 ﻿// Services/Billing/BillingOrchestrator.cs
 using System.Data;
+using EPApi.DataAccess;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
 
@@ -12,7 +13,19 @@ namespace EPApi.Services.Billing
     public sealed class BillingOrchestrator
     {
         private readonly IConfiguration _cfg;
-        public BillingOrchestrator(IConfiguration cfg) => _cfg = cfg;
+        private readonly IBillingGateway _gateway;
+        private readonly BillingRepository _billingRepo;
+        private readonly IOrgBillingProfileRepository _orgProfileRepo;
+        private readonly IOrgRepository _orgRepository;
+
+        public BillingOrchestrator(IConfiguration cfg, IBillingGateway gateway, BillingRepository billing, IOrgBillingProfileRepository orgProfileRepo, IOrgRepository orgRepository)
+        {
+            _cfg = cfg;
+            _gateway = gateway;
+            _billingRepo = billing;
+            _orgProfileRepo = orgProfileRepo;
+            _orgRepository = orgRepository;
+        }
 
         /// <summary>
         /// Aplica el plan y sus límites. Recibe el diccionario de entitlements ya resuelto por el caller.
@@ -79,5 +92,51 @@ WHEN NOT MATCHED THEN INSERT (id, org_id, feature_code, limit_value)
 
             await tx.CommitAsync(ct);
         }
+
+        public async Task<(bool can, string? reason)> CanChangeToPlanAsync(Guid orgId, string planCode, CancellationToken ct = default)
+        {
+            if (string.IsNullOrWhiteSpace(planCode))
+                return (false, "planCode requerido");
+
+            // 1) ¿El plan destino implica 1 seat?
+            var seatsTarget = await _billingRepo.ResolveSeatsForPlanAsync(planCode, ct);
+            if (seatsTarget.HasValue && seatsTarget.Value == 1)
+            {
+                // 2) Contar miembros activos de la organización
+                var memberCount = await _orgRepository.CountActiveMembersAsync(orgId, ct);
+                if (memberCount > 1)
+                {
+                    return (false,
+                        $"No se puede cambiar a plan '{planCode}' con {memberCount} miembros activos. " +
+                        "Reduce a 1 miembro antes de continuar.");
+                }
+            }
+
+            return (true, null);
+        }
+
+        public async Task<string> GetHostedSubscriptionUrlAsync(Guid orgId, string planCode, CancellationToken ct)
+        {
+            var plan = await _billingRepo.GetPlanByCodeAsync(planCode, ct);
+            if (plan is null) throw new InvalidOperationException("Plan inválido");
+            if (!string.Equals(plan.Provider, "tilopay", StringComparison.OrdinalIgnoreCase)
+                || string.IsNullOrWhiteSpace(plan.ProviderPriceId))
+                throw new InvalidOperationException("Plan no mapeado a TiloPay");
+
+            var prof = await _orgProfileRepo.GetAsync(orgId, ct);
+            var email = prof?.ContactEmail
+                        ?? throw new InvalidOperationException("Falta email de facturación de la organización");
+
+            var (registerUrl, renewUrl, _) = await _gateway.GetRecurrentUrlAsync(plan.ProviderPriceId!, email, ct);
+            var url = !string.IsNullOrWhiteSpace(registerUrl) ? registerUrl
+                    : !string.IsNullOrWhiteSpace(renewUrl) ? renewUrl
+                    : null;
+
+            if (string.IsNullOrWhiteSpace(url))
+                throw new InvalidOperationException("TiloPay no devolvió URL de registro ni de renovación");
+
+            return url!;
+        }
+
     }
 }
