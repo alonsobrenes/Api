@@ -1,20 +1,23 @@
 ﻿using EPApi.DataAccess;
 using EPApi.Services;
 using EPApi.Services.Billing;
+using EPApi.Services.Storage;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Identity.Client;
 using System;
+using System.Data;
 using System.IO;
 using System.Linq;
 using System.Security.Claims;
 using System.Threading;
 using System.Threading.Tasks;
-using static Azure.Core.HttpHeader;
 using TagLib;
+using static Azure.Core.HttpHeader;
 
 namespace EPApi.Controllers
 {
@@ -32,6 +35,8 @@ namespace EPApi.Controllers
         private readonly BillingRepository _billing;
         private readonly IHashtagService? _hashtag;
         private readonly IUsageService _usage;
+        private readonly IStorageService _storage;
+        private readonly string _cs;
 
         public ClinicianInterviewsController(
             IInterviewsRepository repo,
@@ -42,7 +47,8 @@ namespace EPApi.Controllers
             BillingRepository billing,
             IHashtagService hashtag,
             IInterviewDraftService drafts,
-            IUsageService usage
+            IUsageService usage,
+            IStorageService storage
         )
         {
             _repo = repo;
@@ -54,6 +60,9 @@ namespace EPApi.Controllers
             _billing = billing;
             _hashtag = hashtag;
             _usage = usage;
+            _storage = storage;
+            _cs = cfg.GetConnectionString("Default")
+                 ?? throw new InvalidOperationException("Missing connection string 'DefaultConnection'");
         }
 
         // Crea una entrevista vacía y devuelve su Id
@@ -137,6 +146,8 @@ namespace EPApi.Controllers
 
         // ========================= AUDIO UPLOAD =========================
 
+        private static long GiB(int gb) => (long)gb * 1024L * 1024L * 1024L;
+
         [HttpPost("{id:guid}/audio")]
         [Consumes("multipart/form-data")]
         [RequestSizeLimit(500_000_000)]
@@ -196,16 +207,26 @@ namespace EPApi.Controllers
             var rel = $"/uploads/interviews/{id.ToString("N")}/{fname}";
 
             var usageKey = $"stt-upload:{id}:{rel}";
-           
-            var gate = await _usage.TryConsumeAsync(orgId, "storage.gb", sizeInGigabytes, usageKey, ct);
-            if (!gate.Allowed)
+
+            var limitGb = await _storage.GetStorageLimitGbAsync(orgId, ct);
+            var usedBytes = await _storage.GetOrgUsedBytesAsync(orgId, ct) ?? 0L;
+
+            if (limitGb is null)
+            {
+                System.IO.File.Delete(absPath);
+                throw new UnauthorizedAccessException("No storage entitlement for org");
+            }
+
+            var allowedBytes = GiB(limitGb.Value);
+
+            if (usedBytes + file.Length > allowedBytes)
             {
                 try { System.IO.File.Delete(absPath); } catch { /* noop */ }
 
                 return Problem(statusCode: 402, title: "Límite del plan",
-                    detail: "Has alcanzado tu límite mensual de almacenamiento. Considera comprar un add-on o cambiar de plan.");
-            }
+                    detail: "Has alcanzado tu límite de almacenamiento. Considera comprar un add-on o cambiar de plan.");
 
+            }
             
             await _repo.AddAudioAsync(id, rel, file.ContentType, durationMs, ct);            
             await _repo.SetStatusAsync(id, "uploaded", ct);
@@ -229,94 +250,140 @@ namespace EPApi.Controllers
             return true;
         }
 
+        //[HttpPost("{id:guid}/transcribe")]
+        //public async Task<IActionResult> Transcribe(Guid id, [FromQuery] bool force = false, CancellationToken ct = default)
+        //{
+        //    // cooldown 20s (solo si no se fuerza)
+        //    if (!force && !TryAcquireTranscribeCooldown(id, 20, out var _))
+        //        return StatusCode(429, new { message = "Operación en enfriamiento.", retryAfterSec = 20 });
+
+        //    // === Trial expirado → 402 (igual patrón que en otros endpoints)
+        //    var orgId = await RequireOrgIdAsync(ct);
+        //    if (await _billing.IsTrialExpiredAsync(orgId, DateTime.UtcNow, ct))
+        //        return StatusCode(402, new { message = "Tu período de prueba expiró. Elige un plan para continuar." });
+
+        //    try
+        //    {
+        //        // Cache: si ya existe y no pidieron force, devolvemos último texto
+        //        if (!force)
+        //        {
+        //            var cached = await _repo.GetLatestTranscriptTextAsync(id, ct);
+        //            if (!string.IsNullOrWhiteSpace(cached))
+        //                return Ok(new { language = "es", text = cached, cached = true });
+        //        }
+
+        //        // Localiza el archivo: BD -> disco; si no, recorre carpeta
+        //        var latest = await _repo.GetLatestAudioAsync(id, ct);
+        //        string? absPath = null;
+
+        //        if (latest is not null)
+        //        {
+        //            absPath = ResolveAbsoluteUploadPath(latest.Value.Uri);
+        //            if (!System.IO.File.Exists(absPath)) absPath = null;
+        //        }
+
+        //        if (absPath is null)
+        //        {
+        //            var root = _cfg.GetValue<string>("Uploads:Root")
+        //                       ?? Path.Combine(_env.ContentRootPath, "wwwroot", "uploads");
+        //            var folder = Path.Combine(root, "interviews", id.ToString("N"));
+
+        //            if (!Directory.Exists(folder))
+        //                return BadRequest("No hay audio registrado para esta entrevista (ni archivos en disco).");
+
+        //            var files = new DirectoryInfo(folder).GetFiles();
+        //            if (files.Length == 0)
+        //                return BadRequest("No hay audio registrado para esta entrevista (carpeta vacía).");
+
+        //            Array.Sort(files, (a, b) => b.CreationTimeUtc.CompareTo(a.CreationTimeUtc));
+        //            absPath = files[0].FullName;
+
+        //            // Si BD no tenía fila, registra ahora
+        //            if (latest is null)
+        //            {
+        //                var rootNorm = (_cfg.GetValue<string>("Uploads:Root")
+        //                                 ?? Path.Combine(_env.ContentRootPath, "wwwroot", "uploads"))
+        //                               .TrimEnd('\\', '/');
+
+        //                var relUri = absPath.Replace(rootNorm, "").Replace("\\", "/");
+        //                if (!relUri.StartsWith("/")) relUri = "/" + relUri;
+
+        //                await _repo.AddAudioAsync(id, relUri, GetMimeFromExtension(Path.GetExtension(absPath)), null, ct);
+        //            }
+        //        }
+
+        //        await _repo.SetStatusAsync(id, "transcribing", ct);
+
+        //        var (lang, text, wordsJson, durationMs) = await _stt.TranscribeAsync(absPath!, ct);
+
+        //        await _repo.SaveTranscriptAsync(id, lang, text, wordsJson, ct);
+
+        //        //TimeSpan duration = TimeSpan.FromMilliseconds( (double)durationMs);
+        //        //int minutes = (int)duration.TotalMinutes;
+
+        //        int minutes = 1; // default mínimo de 1 minuto
+        //        if (durationMs.HasValue && durationMs.Value > 0)
+        //        {
+        //            var duration = TimeSpan.FromMilliseconds(durationMs.Value);
+        //            minutes = Math.Max(1, (int)Math.Round(duration.TotalMinutes));
+        //        }
+
+        //        var idemKey = $"transcript-auto:{id}:{orgId}";
+        //        var gate = await _usage.TryConsumeAsync(orgId, "stt.minutes.monthly", minutes, idemKey, ct);
+        //        if (!gate.Allowed)
+        //            return StatusCode(402, new { message = "Has alcanzado el límite mensual de minutos de Transcripción para tu plan." });
+
+        //        return Ok(new { language = lang, text, cached = false });
+        //    }
+        //    catch (RateLimitException rlex)
+        //    {
+        //        return StatusCode(429, new { message = rlex.Message, retryAfterSec = rlex.RetryAfterSeconds });
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        Console.Error.WriteLine($"[Transcribe] Interview={id} Error={ex.GetType().Name} {ex.Message}\n{ex.StackTrace}");
+        //        return StatusCode(500, $"Transcripción fallida: {ex.Message}");
+        //    }
+        //}
+
         [HttpPost("{id:guid}/transcribe")]
         public async Task<IActionResult> Transcribe(Guid id, [FromQuery] bool force = false, CancellationToken ct = default)
         {
-            // cooldown 20s (solo si no se fuerza)
-            if (!force && !TryAcquireTranscribeCooldown(id, 20, out var _))
-                return StatusCode(429, new { message = "Operación en enfriamiento.", retryAfterSec = 20 });
-
-            // === Trial expirado → 402 (igual patrón que en otros endpoints)
-            var orgId = await RequireOrgIdAsync(ct);
-            if (await _billing.IsTrialExpiredAsync(orgId, DateTime.UtcNow, ct))
-                return StatusCode(402, new { message = "Tu período de prueba expiró. Elige un plan para continuar." });
-
-            try
+            // 1) Si ya hay transcript DONE y no pidieron force, devolverlo inmediatamente
+            var done = await GetLatestTranscriptByStatusAsync(id, "done", ct);
+            if (!force && done is not null)
             {
-                // Cache: si ya existe y no pidieron force, devolvemos último texto
-                if (!force)
-                {
-                    var cached = await _repo.GetLatestTranscriptTextAsync(id, ct);
-                    if (!string.IsNullOrWhiteSpace(cached))
-                        return Ok(new { language = "es", text = cached, cached = true });
-                }
-
-                // Localiza el archivo: BD -> disco; si no, recorre carpeta
-                var latest = await _repo.GetLatestAudioAsync(id, ct);
-                string? absPath = null;
-
-                if (latest is not null)
-                {
-                    absPath = ResolveAbsoluteUploadPath(latest.Value.Uri);
-                    if (!System.IO.File.Exists(absPath)) absPath = null;
-                }
-
-                if (absPath is null)
-                {
-                    var root = _cfg.GetValue<string>("Uploads:Root")
-                               ?? Path.Combine(_env.ContentRootPath, "wwwroot", "uploads");
-                    var folder = Path.Combine(root, "interviews", id.ToString("N"));
-
-                    if (!Directory.Exists(folder))
-                        return BadRequest("No hay audio registrado para esta entrevista (ni archivos en disco).");
-
-                    var files = new DirectoryInfo(folder).GetFiles();
-                    if (files.Length == 0)
-                        return BadRequest("No hay audio registrado para esta entrevista (carpeta vacía).");
-
-                    Array.Sort(files, (a, b) => b.CreationTimeUtc.CompareTo(a.CreationTimeUtc));
-                    absPath = files[0].FullName;
-
-                    // Si BD no tenía fila, registra ahora
-                    if (latest is null)
-                    {
-                        var rootNorm = (_cfg.GetValue<string>("Uploads:Root")
-                                         ?? Path.Combine(_env.ContentRootPath, "wwwroot", "uploads"))
-                                       .TrimEnd('\\', '/');
-
-                        var relUri = absPath.Replace(rootNorm, "").Replace("\\", "/");
-                        if (!relUri.StartsWith("/")) relUri = "/" + relUri;
-
-                        await _repo.AddAudioAsync(id, relUri, GetMimeFromExtension(Path.GetExtension(absPath)), null, ct);
-                    }
-                }
-
-                await _repo.SetStatusAsync(id, "transcribing", ct);
-
-                var (lang, text, wordsJson, durationMs) = await _stt.TranscribeAsync(absPath!, ct);
-
-                await _repo.SaveTranscriptAsync(id, lang, text, wordsJson, ct);
-                
-                TimeSpan duration = TimeSpan.FromMilliseconds( (double)durationMs);
-
-                int minutes = (int)duration.TotalMinutes;
-                var idemKey = $"transcript-auto:{id}:{orgId}";
-                var gate = await _usage.TryConsumeAsync(orgId, "stt.minutes.monthly", minutes, idemKey, ct);
-                if (!gate.Allowed)
-                    return StatusCode(402, new { message = "Has alcanzado el límite mensual de minutos de Transcripción para tu plan." });
-
-                return Ok(new { language = lang, text, cached = false });
+                return Ok(BuildTranscriptDto(done, includeText: true));
             }
-            catch (RateLimitException rlex)
+
+            // 2) Si hay uno pendiente (queued/processing), informar al cliente
+            var pending = await GetLatestPendingTranscriptAsync(id, ct);
+            if (pending is not null)
             {
-                return StatusCode(429, new { message = rlex.Message, retryAfterSec = rlex.RetryAfterSeconds });
+                return Accepted(BuildTranscriptDto(pending, includeText: false));
             }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine($"[Transcribe] Interview={id} Error={ex.GetType().Name} {ex.Message}\n{ex.StackTrace}");
-                return StatusCode(500, $"Transcripción fallida: {ex.Message}");
-            }
+
+            // 3) Encolar uno nuevo
+            var created = await InsertQueuedTranscriptAsync(id, ct);
+
+            // Macro-status de la entrevista
+            try { await _repo.SetStatusAsync(id, "queued", ct); } catch { /* soft */ }
+
+            return Accepted(BuildTranscriptDto(created, includeText: false));
         }
+
+        [HttpGet("{id:guid}/transcription-status")]
+        public async Task<IActionResult> GetTranscriptionStatus(Guid id, CancellationToken ct = default)
+        {
+            var latest = await GetLatestTranscriptAnyAsync(id, ct);
+            if (latest is null)
+                return NotFound(new { message = "No existe aún un intento de transcripción para esta entrevista." });
+
+            var includeText = string.Equals(latest.Status, "done", StringComparison.OrdinalIgnoreCase);
+            return Ok(BuildTranscriptDto(latest, includeText));
+        }
+
+
 
         // ================= GENERAR BORRADOR (IA) =======================
 
@@ -456,9 +523,140 @@ namespace EPApi.Controllers
         }
 
 
+        private sealed class TranscriptRow
+        {
+            public Guid Id { get; init; }
+            public Guid InterviewId { get; init; }
+            public string? Language { get; init; }
+            public string Text { get; init; } = "";
+            public string? WordsJson { get; init; }
+            public string Status { get; init; } = "queued";
+            public string? ErrorMessage { get; init; }
+            public DateTime CreatedAtUtc { get; init; }
+            public DateTime? StartedAtUtc { get; init; }
+            public DateTime? FinishedAtUtc { get; init; }
+            public int AttemptCount { get; init; }
+        }
+
+        private object BuildTranscriptDto(TranscriptRow r, bool includeText)
+        {
+            return new
+            {
+                transcriptId = r.Id,
+                interviewId = r.InterviewId,
+                status = r.Status,
+                createdAtUtc = r.CreatedAtUtc,
+                startedAtUtc = r.StartedAtUtc,
+                finishedAtUtc = r.FinishedAtUtc,
+                attemptCount = r.AttemptCount,
+                errorMessage = r.ErrorMessage,
+                language = r.Language,
+                text = includeText ? r.Text : null
+            };
+        }
+
+        private async Task<TranscriptRow?> GetLatestTranscriptByStatusAsync(Guid interviewId, string status, CancellationToken ct)
+        {
+            using var conn = new SqlConnection(_cs);
+            await conn.OpenAsync(ct);
+
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = @"
+SELECT TOP 1 id, interview_id, language, [text], words_json, status, error_message,
+       created_at_utc, started_at_utc, finished_at_utc, attempt_count
+FROM dbo.interview_transcripts
+WHERE interview_id = @iid AND status = @st
+ORDER BY created_at_utc DESC;";
+            cmd.Parameters.Add(new SqlParameter("@iid", SqlDbType.UniqueIdentifier) { Value = interviewId });
+            cmd.Parameters.Add(new SqlParameter("@st", SqlDbType.NVarChar, 32) { Value = status });
+
+            using var rd = await cmd.ExecuteReaderAsync(ct);
+            if (!await rd.ReadAsync(ct)) return null;
+            return MapTranscript(rd);
+        }
+
+        private async Task<TranscriptRow?> GetLatestPendingTranscriptAsync(Guid interviewId, CancellationToken ct)
+        {
+            using var conn = new SqlConnection(_cs);
+            await conn.OpenAsync(ct);
+
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = @"
+SELECT TOP 1 id, interview_id, language, [text], words_json, status, error_message,
+       created_at_utc, started_at_utc, finished_at_utc, attempt_count
+FROM dbo.interview_transcripts
+WHERE interview_id = @iid AND status IN (N'queued', N'processing')
+ORDER BY created_at_utc DESC;";
+            cmd.Parameters.Add(new SqlParameter("@iid", SqlDbType.UniqueIdentifier) { Value = interviewId });
+
+            using var rd = await cmd.ExecuteReaderAsync(ct);
+            if (!await rd.ReadAsync(ct)) return null;
+            return MapTranscript(rd);
+        }
+
+        private async Task<TranscriptRow?> GetLatestTranscriptAnyAsync(Guid interviewId, CancellationToken ct)
+        {
+            using var conn = new SqlConnection(_cs);
+            await conn.OpenAsync(ct);
+
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = @"
+SELECT TOP 1 id, interview_id, language, [text], words_json, status, error_message,
+       created_at_utc, started_at_utc, finished_at_utc, attempt_count
+FROM dbo.interview_transcripts
+WHERE interview_id = @iid
+ORDER BY created_at_utc DESC;";
+            cmd.Parameters.Add(new SqlParameter("@iid", SqlDbType.UniqueIdentifier) { Value = interviewId });
+
+            using var rd = await cmd.ExecuteReaderAsync(ct);
+            if (!await rd.ReadAsync(ct)) return null;
+            return MapTranscript(rd);
+        }
+
+        private async Task<TranscriptRow> InsertQueuedTranscriptAsync(Guid interviewId, CancellationToken ct)
+        {
+            using var conn = new SqlConnection(_cs);
+            await conn.OpenAsync(ct);
+
+            // Evitar duplicados si justo otro hilo encola
+            // (ya verificamos antes, pero esto es defensivo)
+            var existing = await GetLatestPendingTranscriptAsync(interviewId, ct);
+            if (existing is not null) return existing;
+
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = @"
+INSERT INTO dbo.interview_transcripts (interview_id, language, [text], words_json, status)
+OUTPUT inserted.id, inserted.interview_id, inserted.language, inserted.[text], inserted.words_json,
+       inserted.status, inserted.error_message, inserted.created_at_utc, inserted.started_at_utc,
+       inserted.finished_at_utc, inserted.attempt_count
+VALUES (@iid, NULL, N'', NULL, N'queued');";
+            cmd.Parameters.Add(new SqlParameter("@iid", SqlDbType.UniqueIdentifier) { Value = interviewId });
+
+            using var rd = await cmd.ExecuteReaderAsync(ct);
+            if (!await rd.ReadAsync(ct)) throw new InvalidOperationException("No se pudo insertar transcript 'queued'.");
+            return MapTranscript(rd);
+        }
+
+        private static TranscriptRow MapTranscript(SqlDataReader rd)
+        {
+            return new TranscriptRow
+            {
+                Id = rd.GetGuid(0),
+                InterviewId = rd.GetGuid(1),
+                Language = rd.IsDBNull(2) ? null : rd.GetString(2),
+                Text = rd.IsDBNull(3) ? "" : rd.GetString(3),
+                WordsJson = rd.IsDBNull(4) ? null : rd.GetString(4),
+                Status = rd.IsDBNull(5) ? "queued" : rd.GetString(5),
+                ErrorMessage = rd.IsDBNull(6) ? null : rd.GetString(6),
+                CreatedAtUtc = rd.GetDateTime(7),
+                StartedAtUtc = rd.IsDBNull(8) ? (DateTime?)null : rd.GetDateTime(8),
+                FinishedAtUtc = rd.IsDBNull(9) ? (DateTime?)null : rd.GetDateTime(9),
+                AttemptCount = rd.IsDBNull(10) ? 0 : rd.GetInt32(10)
+            };
+        }
     }
 
-
+    
 
     // Excepción para comunicar 429 de forma controlada
     public sealed class RateLimitException : Exception

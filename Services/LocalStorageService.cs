@@ -42,7 +42,7 @@ namespace EPApi.Services.Storage
 
         private static long GiB(int gb) => (long)gb * 1024L * 1024L * 1024L;
 
-        private async Task<int?> GetStorageLimitGbAsync(Guid orgId, CancellationToken ct)
+        public async Task<int?> GetStorageLimitGbAsync(Guid orgId, CancellationToken ct)
         {
             const string SQL = @"SELECT e.limit_value
 FROM dbo.entitlements e
@@ -56,6 +56,22 @@ WHERE e.org_id = @org AND e.feature_code = N'storage.gb';";
             var res = await cmd.ExecuteScalarAsync(ct);
             if (res == null || res == DBNull.Value) return null;
             return Convert.ToInt32(res, CultureInfo.InvariantCulture);
+        }
+
+        public async Task<long?> GetOrgUsedBytesAsync(Guid orgId, CancellationToken ct)
+        {
+            long usedBytes = 0;
+            const string SQL = "SELECT used_bytes FROM dbo.org_storage WITH (UPDLOCK, HOLDLOCK) WHERE org_id = @org;";
+            
+            await using var cn = new SqlConnection(_cs);
+            await cn.OpenAsync(ct);
+            await using var cmd = new SqlCommand(SQL, cn);
+            cmd.Parameters.Add(new SqlParameter("@org", SqlDbType.UniqueIdentifier) { Value = orgId });
+
+            var obj = await cmd.ExecuteScalarAsync(ct);
+            usedBytes = (obj == null || obj == DBNull.Value) ? 0 : Convert.ToInt64(obj, CultureInfo.InvariantCulture);
+
+            return usedBytes;            
         }
 
         private async Task EnsureOrgStorageRowAsync(SqlConnection cn, SqlTransaction tx, Guid orgId, CancellationToken ct)

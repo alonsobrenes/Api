@@ -22,6 +22,10 @@ namespace EPApi.Services.Storage
 
         //Task<bool> SoftDeleteAsync(Guid fileId, int? deletedByUserId, CancellationToken ct);
         Task<bool> SoftDeleteAsync(Guid fileId, Guid orgId, int? deletedByUserId, CancellationToken ct);
+
+        Task<int?> GetStorageLimitGbAsync(Guid orgId, CancellationToken ct);
+
+        Task<long?> GetOrgUsedBytesAsync(Guid orgId, CancellationToken ct);
     }
 
     public sealed record PatientFileDto(
