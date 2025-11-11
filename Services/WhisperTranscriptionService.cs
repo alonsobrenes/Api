@@ -30,6 +30,11 @@ namespace EPApi.Services
             client.BaseAddress = new Uri("https://api.openai.com/");
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
 
+            client.Timeout = Timeout.InfiniteTimeSpan; 
+            
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(TimeSpan.FromMinutes(20));
+
             // 3 intentos con backoff exponencial + jitter
             var attempts = 0;
             var delayBase = TimeSpan.FromSeconds(2);
@@ -40,7 +45,7 @@ namespace EPApi.Services
                 using var form = new MultipartFormDataContent
                 {
                     { new StringContent("whisper-1"), "model" },
-                    // { new StringContent("es"), "language" }, // opcional
+                    { new StringContent("es"), "language" }, // opcional
                 };
 
                 var fileName = Path.GetFileName(absolutePath);
@@ -51,8 +56,8 @@ namespace EPApi.Services
                 form.Add(fileContent, "file", fileName);
                 form.Add(new StringContent("es"), "language");
 
-                using var resp = await client.PostAsync("v1/audio/transcriptions", form, ct);
-                var body = await resp.Content.ReadAsStringAsync(ct);
+                using var resp = await client.PostAsync("v1/audio/transcriptions", form, timeoutCts.Token);
+                var body = await resp.Content.ReadAsStringAsync(timeoutCts.Token);
 
                 long? durationMs = null;
                 try

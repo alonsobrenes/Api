@@ -119,6 +119,8 @@ builder.Services.Configure<StorageArchiveOptions>(builder.Configuration.GetSecti
 builder.Services.AddScoped<ITrialProvisioner, TrialProvisioner>();
 builder.Services.AddScoped<IStorageService, LocalStorageService>();
 builder.Services.AddScoped<IArchiveService, ArchiveService>();
+builder.Services.AddHostedService<TranscriptionHostedService>();
+
 builder.Services.AddHostedService<ArchiveHostedService>();
 builder.Services.AddScoped<IRegistrationService, RegistrationService>();
 builder.Services.AddScoped<LabelsRepository>();
@@ -130,8 +132,6 @@ builder.Services.AddScoped<ISearchService, SearchService>();
 builder.Services.AddScoped<IEmailSender, SmtpEmailSender>();
 builder.Services.AddScoped<IOrgAccessService, OrgAccessService>();
 builder.Services.AddScoped<IPaymentsRepository, SqlPaymentsRepository>();
-
-
 builder.Services.AddScoped<IOrgRepository, OrgRepository > ();
 builder.Services.AddScoped<IPaymentMethodRepository, SqlPaymentMethodRepository>();
 builder.Services.AddScoped<IPaymentMethodTokenizeContextProvider, DefaultPaymentMethodTokenizeContextProvider>();
@@ -189,7 +189,7 @@ builder.Services.AddControllers(options =>
 
 var app = builder.Build();
 
-await DatabaseInitializer.EnsureCreatedAndSeedAsync(app.Configuration.GetConnectionString("Default"));
+//await DatabaseInitializer.EnsureCreatedAndSeedAsync(app.Configuration.GetConnectionString("Default"));
 
 if (app.Environment.IsDevelopment())
 {
