@@ -1,8 +1,9 @@
-﻿using System.Security.Claims;
+﻿using EPApi.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.SqlClient;
 using System.Data;
+using System.Security.Claims;
 
 namespace EPApi.Controllers
 {
@@ -38,37 +39,87 @@ namespace EPApi.Controllers
             public string? actionLabel { get; set; }
         }
 
-        [HttpPost]
-        public async Task<IActionResult> Create([FromBody] CreateDto dto, CancellationToken ct = default)
-        {
-            ValidateKind(dto.kind);
-            ValidateAudience(dto.audience);
+            [HttpPost]
+            public async Task<IActionResult> Create([FromBody] CreateDto dto, CancellationToken ct = default)
+            {
+                ValidateKind(dto.kind);
+                ValidateAudience(dto.audience);
 
-            var userId = GetUserIdOrThrow();
-            Guid id;
+                var userId = GetUserIdOrThrow();
+                Guid id;
 
-            using var conn = new SqlConnection(_connString);
-            await conn.OpenAsync(ct);
-            using var cmd = conn.CreateCommand();
-            cmd.CommandText = @"
-INSERT INTO dbo.notifications (title, body, kind, audience, audience_value, published_at_utc, expires_at_utc, created_by_user_id, action_url, action_label)
-OUTPUT inserted.id
-VALUES (@title, @body, @kind, @aud, @aval, @pub, @exp, @cuid, @aurl, @albl);";
-            cmd.Parameters.Add(new SqlParameter("@title", SqlDbType.NVarChar, 200) { Value = dto.title ?? "" });
-            cmd.Parameters.Add(new SqlParameter("@body", SqlDbType.NVarChar) { Value = dto.body ?? "" });
-            cmd.Parameters.Add(new SqlParameter("@kind", SqlDbType.NVarChar, 16) { Value = dto.kind });
-            cmd.Parameters.Add(new SqlParameter("@aud", SqlDbType.NVarChar, 16) { Value = dto.audience });
-            cmd.Parameters.Add(new SqlParameter("@aval", SqlDbType.NVarChar) { Value = (object?)dto.audienceValue ?? DBNull.Value });
-            cmd.Parameters.Add(new SqlParameter("@pub", SqlDbType.DateTime2) { Value = (object?)dto.publishedAtUtc ?? DBNull.Value });
-            cmd.Parameters.Add(new SqlParameter("@exp", SqlDbType.DateTime2) { Value = (object?)dto.expiresAtUtc ?? DBNull.Value });
-            cmd.Parameters.Add(new SqlParameter("@cuid", SqlDbType.Int) { Value = userId });
-            cmd.Parameters.Add(new SqlParameter("@aurl", SqlDbType.NVarChar, 500) { Value = (object?)dto.actionUrl ?? DBNull.Value });
-            cmd.Parameters.Add(new SqlParameter("@albl", SqlDbType.NVarChar, 80) { Value = (object?)dto.actionLabel ?? DBNull.Value });
+                using var conn = new SqlConnection(_connString);
+                await conn.OpenAsync(ct);
 
-            var obj = await cmd.ExecuteScalarAsync(ct);
-            id = (obj is Guid g) ? g : Guid.Empty;
+                using var tx = await conn.BeginTransactionAsync(ct);
 
-            return CreatedAtAction(nameof(GetList), new { id }, new { id });
+            try { 
+                using var cmd = conn.CreateCommand();
+                cmd.Transaction = (SqlTransaction)tx;
+                cmd.CommandText = @"
+    INSERT INTO dbo.notifications (title, body, kind, audience, audience_value, published_at_utc, expires_at_utc, created_by_user_id, action_url, action_label)
+    OUTPUT inserted.id
+    VALUES (@title, @body, @kind, @aud, @aval, @pub, @exp, @cuid, @aurl, @albl);";
+                cmd.Parameters.Add(new SqlParameter("@title", SqlDbType.NVarChar, 200) { Value = dto.title ?? "" });
+                cmd.Parameters.Add(new SqlParameter("@body", SqlDbType.NVarChar) { Value = dto.body ?? "" });
+                cmd.Parameters.Add(new SqlParameter("@kind", SqlDbType.NVarChar, 16) { Value = dto.kind });
+                cmd.Parameters.Add(new SqlParameter("@aud", SqlDbType.NVarChar, 16) { Value = dto.audience });
+                cmd.Parameters.Add(new SqlParameter("@aval", SqlDbType.NVarChar) { Value = (object?)dto.audienceValue ?? DBNull.Value });
+                cmd.Parameters.Add(new SqlParameter("@pub", SqlDbType.DateTime2) { Value = (object?)dto.publishedAtUtc ?? DBNull.Value });
+                cmd.Parameters.Add(new SqlParameter("@exp", SqlDbType.DateTime2) { Value = (object?)dto.expiresAtUtc ?? DBNull.Value });
+                cmd.Parameters.Add(new SqlParameter("@cuid", SqlDbType.Int) { Value = userId });
+                cmd.Parameters.Add(new SqlParameter("@aurl", SqlDbType.NVarChar, 500) { Value = (object?)dto.actionUrl ?? DBNull.Value });
+                cmd.Parameters.Add(new SqlParameter("@albl", SqlDbType.NVarChar, 80) { Value = (object?)dto.actionLabel ?? DBNull.Value });
+
+                var obj = await cmd.ExecuteScalarAsync(ct);
+                id = (obj is Guid g) ? g : Guid.Empty;
+
+                if (id != Guid.Empty)
+                {
+                    if (dto.audience == "user")
+                    {
+                        // audienceValue esperado como user_id INT en string
+                        if (!int.TryParse(dto.audienceValue, out var targetUserId))
+                            return BadRequest(new { error = "audienceValue debe ser el user_id (int) cuando audience='user'" });
+
+                        using var cmd2 = conn.CreateCommand();
+                        cmd2.Transaction = (SqlTransaction)tx;
+                        cmd2.CommandText = @"
+INSERT INTO dbo.user_notifications (notification_id, user_id, is_read, read_at_utc, archived_at_utc, created_at_utc)
+VALUES (@nid, @uid, 0, NULL, NULL, SYSUTCDATETIME());";
+                        cmd2.Parameters.Add(new SqlParameter("@nid", SqlDbType.UniqueIdentifier) { Value = id });
+                        cmd2.Parameters.Add(new SqlParameter("@uid", SqlDbType.Int) { Value = targetUserId });
+                        await cmd2.ExecuteNonQueryAsync(ct);
+                    }
+                    else if (dto.audience == "org")
+                    {
+                        // audienceValue esperado como org_id INT en string
+                        if (!Guid.TryParse(dto.audienceValue, out var targetOrgId))
+                            return BadRequest(new { error = "audienceValue debe ser el org_id (GUID) cuando audience='org'" });
+
+                        using var cmd3 = conn.CreateCommand();
+                        cmd3.Transaction = (SqlTransaction)tx;
+                        cmd3.CommandText = @"
+INSERT INTO dbo.user_notifications (notification_id, user_id, is_read, read_at_utc, archived_at_utc, created_at_utc)
+SELECT @nid, m.user_id, 0, NULL, NULL, SYSUTCDATETIME()
+FROM dbo.org_members AS m
+WHERE m.org_id = @org
+  AND m.status = N'active';";
+    cmd3.Parameters.Add(new SqlParameter("@nid", SqlDbType.UniqueIdentifier) { Value = id });
+                        cmd3.Parameters.Add(new SqlParameter("@org", SqlDbType.UniqueIdentifier) { Value = targetOrgId });
+
+                        await cmd3.ExecuteNonQueryAsync(ct);
+                    }
+                    // Si audience == "all": por ahora sin fanout (o implementar más adelante CreateForAllAsync)
+                }
+                await tx.CommitAsync(ct);
+                return CreatedAtAction(nameof(GetList), new { id }, new { id });
+            }
+            catch
+            {
+                await tx.RollbackAsync(ct);
+                throw;
+            }
         }
 
         // ---------------------------
