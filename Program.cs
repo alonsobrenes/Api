@@ -120,7 +120,6 @@ builder.Services.AddScoped<ITrialProvisioner, TrialProvisioner>();
 builder.Services.AddScoped<IStorageService, LocalStorageService>();
 builder.Services.AddScoped<IArchiveService, ArchiveService>();
 builder.Services.AddHostedService<TranscriptionHostedService>();
-
 builder.Services.AddHostedService<ArchiveHostedService>();
 builder.Services.AddScoped<IRegistrationService, RegistrationService>();
 builder.Services.AddScoped<LabelsRepository>();
@@ -137,7 +136,9 @@ builder.Services.AddScoped<IPaymentMethodRepository, SqlPaymentMethodRepository>
 builder.Services.AddScoped<IPaymentMethodTokenizeContextProvider, DefaultPaymentMethodTokenizeContextProvider>();
 builder.Services.AddScoped<IPaymentsRepository, SqlPaymentsRepository>();
 builder.Services.AddSingleton<ITiloPayAuthTokenProvider, TiloPayAuthTokenProvider>();
-
+builder.Services.AddScoped<ISupportRepository, SupportRepository>();
+builder.Services.AddScoped<ISimpleNotificationsService, SimpleNotificationsService>();
+builder.Services.AddScoped<ISupportAttachmentService, SupportAttachmentService>();
 
 builder.Services.AddHttpClient("TiloPay.SafeClient", c => { c.Timeout = TimeSpan.FromSeconds(30); })
     .AddTransientHttpErrorPolicy(p => p.WaitAndRetryAsync(new[]
