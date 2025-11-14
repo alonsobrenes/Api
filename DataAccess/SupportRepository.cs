@@ -18,7 +18,7 @@ namespace EPApi.DataAccess
             _cs = cfg.GetConnectionString("Default") ?? throw new InvalidOperationException("Missing ConnectionStrings:Default");
         }
 
-        public async Task<Guid> CreateTicketAsync(int userId, int? orgId, string subject, string description, string? category, string? priority, CancellationToken ct = default)
+        public async Task<Guid> CreateTicketAsync(int userId, Guid? orgId, string subject, string description, string? category, string? priority, CancellationToken ct = default)
         {
             await using var conn = new SqlConnection(_cs);
             await conn.OpenAsync(ct);
@@ -35,7 +35,7 @@ INSERT INTO dbo.support_tickets (user_id, org_id, subject, description, category
 OUTPUT inserted.id
 VALUES (@uid, @org, @subj, @desc, @cat, @prio);";
                     cmd.Parameters.Add(new SqlParameter("@uid", SqlDbType.Int) { Value = userId });
-                    cmd.Parameters.Add(new SqlParameter("@org", SqlDbType.Int) { Value = (object?)orgId ?? DBNull.Value });
+                    cmd.Parameters.Add(new SqlParameter("@org", SqlDbType.UniqueIdentifier) { Value = (object?)orgId ?? DBNull.Value });
                     cmd.Parameters.Add(new SqlParameter("@subj", SqlDbType.NVarChar, 200) { Value = subject });
                     cmd.Parameters.Add(new SqlParameter("@desc", SqlDbType.NVarChar, -1) { Value = description });
                     cmd.Parameters.Add(new SqlParameter("@cat", SqlDbType.NVarChar, 50) { Value = (object?)category ?? DBNull.Value });
@@ -246,15 +246,16 @@ ORDER BY COALESCE(MAX(m.created_at_utc), t.updated_at_utc, t.created_at_utc) DES
             if (createdFromUtc.HasValue) cmd.Parameters.Add(new SqlParameter("@from", SqlDbType.DateTime2) { Value = createdFromUtc.Value });
             if (createdToUtc.HasValue) cmd.Parameters.Add(new SqlParameter("@to", SqlDbType.DateTime2) { Value = createdToUtc.Value });
             if (!string.IsNullOrWhiteSpace(q)) cmd.Parameters.Add(new SqlParameter("@q", SqlDbType.NVarChar, 210) { Value = $"%{q}%" });
-
+            
             await using var rd = await cmd.ExecuteReaderAsync(ct);
+
             while (await rd.ReadAsync(ct))
             {
                 list.Add(new AdminTicketRow
                 {
                     Id = rd.GetGuid(0),
                     UserId = rd.GetInt32(1),
-                    OrgId = rd.IsDBNull(2) ? null : rd.GetInt32(2),
+                    OrgId = rd.IsDBNull(2) ? null : rd.GetGuid(2),
                     Subject = rd.GetString(3),
                     Status = rd.GetString(4),
                     Priority = rd.IsDBNull(5) ? null : rd.GetString(5),
@@ -272,6 +273,7 @@ ORDER BY COALESCE(MAX(m.created_at_utc), t.updated_at_utc, t.created_at_utc) DES
 
                 });
             }
+            
             return list;
         }
 
@@ -389,8 +391,24 @@ VALUES (@tid, @uid, @body, @int);";
 
             if (!string.IsNullOrWhiteSpace(status))
             {
+                // Normalizamos el status para compararlo
+                var normalizedStatus = status.Trim().ToLowerInvariant();
+
+                // Actualizar status
                 sets.Add("status = @st");
                 cmd.Parameters.Add(new SqlParameter("@st", SqlDbType.NVarChar, 20) { Value = status });
+
+                // Manejo de closed_at_utc según el nuevo estado
+                if (normalizedStatus == "closed")
+                {
+                    // Se está cerrando el ticket (o manteniendo cerrado)
+                    sets.Add("closed_at_utc = SYSUTCDATETIME()");
+                }
+                else
+                {
+                    // Se está reabriendo o cambiando a otro estado
+                    sets.Add("closed_at_utc = NULL");
+                }
             }
 
             // Permitir asignar o desasignar (NULL)
@@ -402,8 +420,9 @@ VALUES (@tid, @uid, @body, @int);";
             if (assignedToUserId.HasValue)
                 cmd.Parameters.Add(new SqlParameter("@ass", SqlDbType.Int) { Value = assignedToUserId.Value });
 
-            cmd.CommandText = $"UPDATE dbo.support_tickets SET {string.Join(", ", sets)} WHERE id=@id;";
+            cmd.CommandText = $"UPDATE dbo.support_tickets SET {string.Join(", ", sets)} WHERE id = @id;";
             cmd.Parameters.Add(new SqlParameter("@id", SqlDbType.UniqueIdentifier) { Value = id });
+
             await cmd.ExecuteNonQueryAsync(ct);
         }
 
@@ -458,6 +477,147 @@ WHERE user_id = @uid
             var obj = await cmd.ExecuteScalarAsync(ct);
             return (obj is int i) ? i : Convert.ToInt32(obj);
         }
+
+        public async Task<IReadOnlyList<OrgTicketRow>> GetOrgTicketsForOrgAsync(Guid orgId, int top = 100, CancellationToken ct = default)
+        {
+            var list = new List<OrgTicketRow>(Math.Clamp(top, 1, 500));
+
+            await using var conn = new SqlConnection(_cs);
+            await conn.OpenAsync(ct);
+            await using var cmd = conn.CreateCommand();
+
+            cmd.CommandText = @"
+SELECT TOP (@top)
+    t.id,
+    t.user_id,                       -- dueño del ticket
+    t.subject,
+    t.status,
+    t.priority,
+    t.category,
+    t.created_at_utc,
+    t.updated_at_utc,
+    MAX(m.created_at_utc) AS last_message_at_utc,
+    b.legal_name,
+    b.trade_name,
+    u.email
+FROM dbo.support_tickets AS t
+INNER JOIN dbo.users AS u
+    ON u.id = t.user_id
+INNER JOIN dbo.org_members om
+    ON u.id = om.user_id
+INNER JOIN org_billing_profiles b
+    ON om.org_id = b.org_id
+LEFT JOIN dbo.support_messages AS m
+    ON m.ticket_id = t.id
+WHERE t.org_id = @org
+GROUP BY
+    t.id,
+    t.user_id,
+    t.subject,
+    t.status,
+    t.priority,
+    t.category,
+    t.created_at_utc,
+    t.updated_at_utc,
+    b.legal_name,
+    b.trade_name,
+    u.email
+ORDER BY COALESCE(MAX(m.created_at_utc), t.updated_at_utc, t.created_at_utc) DESC;";
+
+            cmd.Parameters.Add(new SqlParameter("@top", SqlDbType.Int) { Value = Math.Clamp(top, 1, 500) });
+            cmd.Parameters.Add(new SqlParameter("@org", SqlDbType.UniqueIdentifier) { Value = orgId });
+
+            await using var rd = await cmd.ExecuteReaderAsync(ct);
+            while (await rd.ReadAsync(ct))
+            {
+                var id = rd.GetGuid(0);
+                var userId = rd.GetInt32(1);
+                var subject = rd.IsDBNull(2) ? "" : rd.GetString(2);
+                var status = rd.IsDBNull(3) ? "" : rd.GetString(3);
+                var priority = rd.IsDBNull(4) ? null : rd.GetString(4);
+                var category = rd.IsDBNull(5) ? null : rd.GetString(5);
+                var createdAtUtc = rd.GetDateTime(6);
+                var updatedAtUtc = rd.IsDBNull(7) ? (DateTime?)null : rd.GetDateTime(7);
+                var lastMsgAtUtc = rd.IsDBNull(8) ? (DateTime?)null : rd.GetDateTime(8);
+
+                var legalName = rd.IsDBNull(9) ? "" : rd.GetString(9);
+                var tradeName = rd.IsDBNull(10) ? "" : rd.GetString(10);
+                var email = rd.IsDBNull(11) ? "" : rd.GetString(11);
+                
+                list.Add(new OrgTicketRow
+                {
+                    Id = id,
+                    Subject = subject,
+                    Status = status,
+                    Priority = priority,
+                    Category = category,
+                    CreatedAtUtc = createdAtUtc,
+                    UpdatedAtUtc = updatedAtUtc,
+                    LastMessageAtUtc = lastMsgAtUtc,
+                    CreatedByUserId = userId,
+                    CreatedByName = legalName,
+                    CreatedByEmail = email
+                });
+            }
+
+            return list;
+        }
+
+        public async Task<TicketWithMessages?> GetTicketWithMessagesForOrgAsync(Guid id, Guid orgId, CancellationToken ct = default)
+        {
+            await using var conn = new SqlConnection(_cs);
+            await conn.OpenAsync(ct);
+
+            // Confirmamos que el ticket pertenece a la organización
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = @"
+SELECT id, subject, status, priority, category, created_at_utc, updated_at_utc
+FROM dbo.support_tickets
+WHERE id = @id AND org_id = @org;";
+            cmd.Parameters.Add(new SqlParameter("@id", SqlDbType.UniqueIdentifier) { Value = id });
+            cmd.Parameters.Add(new SqlParameter("@org", SqlDbType.UniqueIdentifier) { Value = orgId });
+
+            await using var rd = await cmd.ExecuteReaderAsync(ct);
+            if (!await rd.ReadAsync(ct)) return null;
+
+            var ticket = new TicketWithMessages
+            {
+                Id = rd.GetGuid(0),
+                Subject = rd.GetString(1),
+                Status = rd.GetString(2),
+                Priority = rd.IsDBNull(3) ? null : rd.GetString(3),
+                Category = rd.IsDBNull(4) ? null : rd.GetString(4),
+                CreatedAtUtc = rd.GetDateTime(5),
+                UpdatedAtUtc = rd.IsDBNull(6) ? (DateTime?)null : rd.GetDateTime(6),
+                Messages = new List<TicketMessage>()
+            };
+            await rd.CloseAsync();
+
+            // Cargar mensajes
+            await using var cmd2 = conn.CreateCommand();
+            cmd2.CommandText = @"
+SELECT m.id, m.sender_user_id, m.body, m.created_at_utc, m.is_internal
+FROM dbo.support_messages m
+WHERE m.ticket_id = @tid
+ORDER BY m.created_at_utc ASC;";
+            cmd2.Parameters.Add(new SqlParameter("@tid", SqlDbType.UniqueIdentifier) { Value = id });
+
+            await using var rd2 = await cmd2.ExecuteReaderAsync(ct);
+            while (await rd2.ReadAsync(ct))
+            {
+                ticket.Messages.Add(new TicketMessage
+                {
+                    Id = rd2.GetGuid(0),
+                    SenderUserId = rd2.GetInt32(1),
+                    Body = rd2.GetString(2),
+                    CreatedAtUtc = rd2.GetDateTime(3),
+                    IsInternal = rd2.GetBoolean(4)
+                });
+            }
+
+            return ticket;
+        }
+
 
         public sealed class TicketWithMessages
         {
