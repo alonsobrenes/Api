@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
+using System.Collections.Generic;
 
 namespace EPApi.Services.Orgs
 {
@@ -98,5 +99,83 @@ WHERE m.user_id = @uid
 
             return isOwner;            
         }
+
+        public async Task<Guid?> GetSupportOrgForUserAsync(int userId, CancellationToken ct = default)
+        {
+            await using var cn = new SqlConnection(_cs);
+            await cn.OpenAsync(ct);
+
+            // 1) Obtener todas las orgs activas del usuario
+            const string sql = @"
+SELECT m.org_id, m.role
+FROM dbo.org_members m
+WHERE m.user_id = @uid
+  AND m.status = 'active';";
+
+            var memberships = new List<(Guid OrgId, string Role)>();
+
+            await using (var cmd = new SqlCommand(sql, cn))
+            {
+                cmd.Parameters.Add(new SqlParameter("@uid", SqlDbType.Int) { Value = userId });
+
+                await using var rd = await cmd.ExecuteReaderAsync(ct);
+                while (await rd.ReadAsync(ct))
+                {
+                    var orgId = rd.GetGuid(0);
+                    var role = rd.IsDBNull(1) ? "" : rd.GetString(1);
+                    memberships.Add((orgId, role));
+                }
+            }
+
+            if (memberships.Count == 0)
+                return null;
+
+            // 2) Clasificar por modo (Solo/Multi) y rol (owner/editor)
+            var multiOwners = new List<Guid>();
+            var multiMembers = new List<Guid>();
+            var soloOrgs = new List<Guid>();
+
+            foreach (var m in memberships)
+            {
+                var mode = await GetOrgModeAsync(m.OrgId, ct); // ya existe en este servicio
+
+                if (mode == OrgMode.Multi)
+                {
+                    if (string.Equals(m.Role, "owner", StringComparison.OrdinalIgnoreCase))
+                    {
+                        multiOwners.Add(m.OrgId);
+                    }
+                    else
+                    {
+                        // editor u otro rol: lo tratamos como miembro de clínica
+                        multiMembers.Add(m.OrgId);
+                    }
+                }
+                else
+                {
+                    // Org "Solo" (1 seat)
+                    soloOrgs.Add(m.OrgId);
+                }
+            }
+
+            // 3) Prioridades:
+            //  - primero: clínicas donde es owner
+            //  - si no hay: clínicas donde es editor
+            //  - si no hay clínicas: única org que tenga (si solo hay una)
+            //  - si hay más de una "solo" o caso raro: null (para no inventar)
+
+            if (multiOwners.Count > 0)
+                return multiOwners[0];
+
+            if (multiMembers.Count > 0)
+                return multiMembers[0];
+
+            if (soloOrgs.Count == 1)
+                return soloOrgs[0];
+
+            // Caso ambiguo (múltiples orgs solo, etc.)
+            return null;
+        }
+
     }
 }

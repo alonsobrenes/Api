@@ -1,10 +1,13 @@
 ﻿using EPApi.DataAccess;
 using EPApi.Services;
 using EPApi.Services.Billing;
+using EPApi.Services.Orgs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Data.SqlClient;
 using System;
 using System.ComponentModel.DataAnnotations;
+using System.Data;
 using System.Linq;
 using System.Security.Claims;
 using System.Threading;
@@ -20,12 +23,14 @@ namespace EPApi.Controllers
         private readonly ISupportRepository _repo;
         private readonly BillingRepository _billing;
         private readonly ISupportAttachmentService _attachments;
+        private readonly IOrgAccessService _orgAccess;
 
-        public MeSupportController(ISupportRepository repo, BillingRepository billing, ISupportAttachmentService attachments)
+        public MeSupportController(ISupportRepository repo, BillingRepository billing, ISupportAttachmentService attachments, IOrgAccessService orgAccess)
         {
             _repo = repo;
             _billing = billing;
             _attachments = attachments;
+            _orgAccess = orgAccess;
         }
 
         private const int MaxTicketsPerDayPerUser = 5;
@@ -56,10 +61,10 @@ namespace EPApi.Controllers
         {
             if (!ModelState.IsValid) return ValidationProblem(ModelState);
             var uid = RequireUserId();
+            Guid? orgGuid = await _orgAccess.GetSupportOrgForUserAsync(uid, ct);
 
-            // org opcional: si usas billing para mapear usuario→org
-            int? orgId = null;
-            var orgGuid = await _billing.GetOrgIdForUserAsync(uid, ct); // según tu patrón en otros controllers
+            //var orgGuid = await _billing.GetOrgIdForUserAsync(uid, ct); // según tu patrón en otros controllers
+            //var isOrgOwner = await _orgAccess.IsOwnerOfMultiSeatOrgAsync(uid, orgGuid.Value, ct);
 
             var windowStart = DateTime.UtcNow.AddDays(-1);
 
@@ -73,7 +78,7 @@ namespace EPApi.Controllers
                 });
             }
 
-            var id = await _repo.CreateTicketAsync(uid, orgId, body.subject.Trim(), body.description.Trim(), body.category?.Trim(), body.priority?.Trim(), ct);
+            var id = await _repo.CreateTicketAsync(uid, orgGuid, body.subject.Trim(), body.description.Trim(), body.category?.Trim(), body.priority?.Trim(), ct);
             return Ok(new { id });
         }
 
@@ -101,7 +106,28 @@ namespace EPApi.Controllers
         {
             var uid = RequireUserId();
             var ticket = await _repo.GetTicketWithMessagesAsync(id, uid, ct);
-            if (ticket is null) return NotFound();
+
+            if (ticket is null)
+            {
+                // ¿Este usuario tiene una org “de soporte”?
+                Guid? orgId = await _orgAccess.GetSupportOrgForUserAsync(uid, ct);
+                if (orgId.HasValue)
+                {
+                    // ¿Es owner de una org multi-seat?
+                    var isOwnerMulti = await _orgAccess.IsOwnerOfMultiSeatOrgAsync(uid, orgId.Value, ct);
+                    if (isOwnerMulti)
+                    {
+                        // Intentamos obtener el ticket por org_id
+                        ticket = await _repo.GetTicketWithMessagesForOrgAsync(id, orgId.Value, ct);
+                    }
+                }
+
+                if (ticket is null)
+                {
+                    // No es su ticket ni pertenece a una org que administre
+                    return NotFound();
+                }
+            }
             var attachments = await _attachments.GetForTicketAsync(id, ct);
 
             var result = new
@@ -214,6 +240,48 @@ namespace EPApi.Controllers
 
             return NoContent();
         }
+
+        [HttpGet("org-tickets")]
+        public async Task<IActionResult> GetOrgTickets(CancellationToken ct)
+        {
+            var uid = RequireUserId();
+
+            // 1) Determinar la org “de soporte” del usuario
+            Guid? orgId = await _orgAccess.GetSupportOrgForUserAsync(uid, ct);
+            if (!orgId.HasValue)
+            {
+                // No pertenece a ninguna org relevante para soporte
+                return Forbid();
+            }
+
+            // 2) Solo el OWNER de una org multi-seat puede ver tickets de la org
+            var isOwnerMulti = await _orgAccess.IsOwnerOfMultiSeatOrgAsync(uid, orgId.Value, ct);
+            if (!isOwnerMulti)
+            {
+                return Forbid();
+            }
+
+            // 3) Consultar al repositorio
+            var rows = await _repo.GetOrgTicketsForOrgAsync(orgId.Value, top: 100, ct);
+
+            var result = rows.Select(r => new
+            {
+                id = r.Id,
+                subject = r.Subject,
+                status = r.Status,
+                priority = r.Priority,
+                category = r.Category,
+                createdAtUtc = r.CreatedAtUtc,
+                updatedAtUtc = r.UpdatedAtUtc,
+                lastMessageAtUtc = r.LastMessageAtUtc,
+                createdByUserId = r.CreatedByUserId,
+                createdByName = r.CreatedByName,
+                createdByEmail = r.CreatedByEmail
+            });
+
+            return Ok(result);
+        }
+
 
     }
 }

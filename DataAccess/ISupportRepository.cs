@@ -10,7 +10,7 @@ namespace EPApi.DataAccess
 {
     public interface ISupportRepository
     {
-        Task<Guid> CreateTicketAsync(int userId, int? orgId, string subject, string description, string? category, string? priority, CancellationToken ct = default);
+        Task<Guid> CreateTicketAsync(int userId, Guid? orgId, string subject, string description, string? category, string? priority, CancellationToken ct = default);
 
         Task<IReadOnlyList<MyTicketRow>> GetMyTicketsAsync(int userId, int top = 50, string? status = null, string? q = null, CancellationToken ct = default);
 
@@ -42,11 +42,15 @@ namespace EPApi.DataAccess
 
         Task<int> CountTicketsCreatedSinceAsync(int userId, DateTime sinceUtc, CancellationToken ct = default);
 
+        Task<IReadOnlyList<OrgTicketRow>> GetOrgTicketsForOrgAsync(Guid orgId, int top = 100, CancellationToken ct = default);
+
+        Task<TicketWithMessages?> GetTicketWithMessagesForOrgAsync(Guid id, Guid orgId, CancellationToken ct = default);
+
         public sealed class AdminTicketRow
         {
             public Guid Id { get; init; }
             public int UserId { get; init; }
-            public int? OrgId { get; init; }
+            public Guid? OrgId { get; init; }
             public string Subject { get; init; } = "";
             public string Status { get; init; } = "open";
             public string? Priority { get; init; }
@@ -71,4 +75,20 @@ namespace EPApi.DataAccess
         public DateTime? UpdatedAtUtc { get; init; }
         public DateTime? LastMessageAtUtc { get; init; }
     }
+
+    public sealed class OrgTicketRow
+    {
+        public Guid Id { get; init; }
+        public string Subject { get; init; } = "";
+        public string Status { get; init; } = "open";
+        public string? Priority { get; init; }
+        public string? Category { get; init; }
+        public DateTime CreatedAtUtc { get; init; }
+        public DateTime? UpdatedAtUtc { get; init; }
+        public DateTime? LastMessageAtUtc { get; init; }
+        public int CreatedByUserId { get; init; }
+        public string CreatedByName { get; init; } = "";
+        public string CreatedByEmail { get; init; } = "";
+    }
+
 }

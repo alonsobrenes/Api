@@ -24,5 +24,8 @@ namespace EPApi.Services.Orgs
         Task<bool> IsOwnerOfMultiSeatOrgAsync(int userId, Guid orgId, CancellationToken ct = default);
 
         Task<bool> IsOwnerAsync(int userId, CancellationToken ct = default);
+
+        Task<Guid?> GetSupportOrgForUserAsync(int userId, CancellationToken ct = default);
+
     }
 }
