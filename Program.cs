@@ -139,6 +139,8 @@ builder.Services.AddSingleton<ITiloPayAuthTokenProvider, TiloPayAuthTokenProvide
 builder.Services.AddScoped<ISupportRepository, SupportRepository>();
 builder.Services.AddScoped<ISimpleNotificationsService, SimpleNotificationsService>();
 builder.Services.AddScoped<ISupportAttachmentService, SupportAttachmentService>();
+builder.Services.AddScoped<IPatientConsentsRepository, PatientConsentsRepository>();
+
 
 builder.Services.AddHttpClient("TiloPay.SafeClient", c => { c.Timeout = TimeSpan.FromSeconds(30); })
     .AddTransientHttpErrorPolicy(p => p.WaitAndRetryAsync(new[]
