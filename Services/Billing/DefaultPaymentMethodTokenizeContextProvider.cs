@@ -1,6 +1,7 @@
 ﻿using System.Data;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
+using EPApi.Utils;
 
 namespace EPApi.Services.Billing
 {
@@ -96,7 +97,7 @@ WHERE org_id = @orgId;";
             }
 
             // 3) Idioma: prioriza campo language, si no: por país; si no, "es"
-            var language = NormalizeLanguage(lang, countryIso2);
+            var language = LocalizationUtils.NormalizeLanguage(lang, countryIso2);
 
             return new PaymentMethodTokenizeContext
             {
@@ -105,23 +106,6 @@ WHERE org_id = @orgId;";
                 LastName = lastName!,
                 Language = language
             };
-        }
-
-        private static string NormalizeLanguage(string? lang, string? countryIso2)
-        {
-            if (!string.IsNullOrWhiteSpace(lang))
-            {
-                var l = lang.Trim().ToLowerInvariant();
-                if (l == "es" || l == "en") return l;
-            }
-            if (!string.IsNullOrWhiteSpace(countryIso2))
-            {
-                var c = countryIso2.Trim().ToUpperInvariant();
-                // LatAm y ES → es
-                var esCountries = new HashSet<string> { "CR", "MX", "CO", "AR", "PE", "CL", "ES", "UY", "PY", "BO", "EC", "GT", "SV", "HN", "NI", "PA", "VE", "PR", "DO", "CU" };
-                if (esCountries.Contains(c)) return "es";
-            }
-            return "es";
         }
 
         private static string DeriveFirstNameFromEmail(string email)
