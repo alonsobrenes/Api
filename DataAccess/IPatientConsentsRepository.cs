@@ -8,6 +8,9 @@ namespace EPApi.DataAccess
 {
     public interface IPatientConsentsRepository
     {
+
+        Task<bool> UpdateSignatureUriAsync(Guid consentId, string signatureUri, CancellationToken ct = default);
+
         /// <summary>
         /// Obtiene el último consentimiento firmado para un paciente y un tipo de consentimiento (o null si no hay).
         /// </summary>

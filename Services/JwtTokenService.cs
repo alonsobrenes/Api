@@ -24,7 +24,7 @@ namespace EPApi.Services
 
         public string GenerateToken(User user, Guid? orgId = null, bool? isOwner = false)
         {
-            var role = (bool)isOwner ? user.Role.ToLowerInvariant() : "viewer";
+            var role = user.Role.ToLowerInvariant() == "admin" ? "admin" : (bool)isOwner ? user.Role.ToLowerInvariant() : "viewer";
 
             var claims = new List<Claim>
             {
@@ -32,6 +32,7 @@ namespace EPApi.Services
                 new Claim(ClaimTypes.Email, user.Email),
                 new Claim(ClaimTypes.Role, role),
                 new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
+                new Claim("role", user.Role ?? "viewer"),
             };
 
             if (orgId!=null)

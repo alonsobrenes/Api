@@ -1,23 +1,25 @@
 using EPApi.DataAccess;
 using EPApi.Models;
 using EPApi.Services;
-using EPApi.Services.Email;
-using EPApi.Services.Billing;
-using EPApi.Services.Storage;
 using EPApi.Services.Archive;
+using EPApi.Services.Billing;
+using EPApi.Services.Email;
 using EPApi.Services.Orgs;
+using EPApi.Services.Search;
+using EPApi.Services.Storage;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
+using Polly;
+using Polly.Extensions.Http; 
 using System.IdentityModel.Tokens.Jwt;
+using System.Net.NetworkInformation;
 using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using EPApi.Services.Search;
-using Polly;
-using Polly.Extensions.Http; 
+
 
 var builder = WebApplication.CreateBuilder(args);
 const string CorsPolicy = "VitePolicy";
@@ -141,6 +143,21 @@ builder.Services.AddScoped<ISimpleNotificationsService, SimpleNotificationsServi
 builder.Services.AddScoped<ISupportAttachmentService, SupportAttachmentService>();
 builder.Services.AddScoped<IPatientConsentsRepository, PatientConsentsRepository>();
 
+builder.Services.Configure<StorageOptions>(
+    builder.Configuration.GetSection("Storage")); // si ya lo tenés, déjalo igual
+
+// Nuevo: IFileStorage
+builder.Services.AddSingleton<IFileStorage, FileSystemFileStorage>();
+
+builder.Services.AddSingleton<IFileStorage>(sp =>
+{
+    var opts = sp.GetRequiredService<IOptions<StorageOptions>>().Value;
+    return opts.Provider switch
+    {
+        "AzureBlob" => new AzureBlobFileStorage(sp.GetRequiredService<IOptions<StorageOptions>>()),
+        "Local" or _ => new FileSystemFileStorage(sp.GetRequiredService<IOptions<StorageOptions>>())
+    };
+});
 
 builder.Services.AddHttpClient("TiloPay.SafeClient", c => { c.Timeout = TimeSpan.FromSeconds(30); })
     .AddTransientHttpErrorPolicy(p => p.WaitAndRetryAsync(new[]

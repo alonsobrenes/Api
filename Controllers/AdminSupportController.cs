@@ -11,7 +11,7 @@ using System.Threading.Tasks;
 
 namespace EPApi.Controllers
 {
-    [Authorize(Policy = "ManageTaxonomy")]
+    [Authorize(Policy = "ManageTaxonomy")]    
     [ApiController]
     [Route("api/admin/support")]
     public class AdminSupportController : ControllerBase
@@ -95,7 +95,7 @@ namespace EPApi.Controllers
                 attachments = attachments.Select(a => new {
                     a.Id,
                     a.FileName,
-                    a.Uri,
+                    uri = $"/api/admin/support/{t.Id}/attachments/{a.Id}",
                     a.MimeType,
                     a.SizeBytes,
                     a.CreatedAtUtc,
@@ -103,6 +103,26 @@ namespace EPApi.Controllers
             };
             return Ok(result);
         }
+        
+        [HttpGet("{id:guid}/attachments/{attachmentId:guid}")]
+        public async Task<IActionResult> DownloadAttachment(Guid id, Guid attachmentId, CancellationToken ct)
+        {
+            // Ya estamos bajo [Authorize(Policy = "ManageTaxonomy")] a nivel de controller,
+            // así que solo admin/soporte llegan aquí.
+
+            var ticket = await _repo.AdminGetTicketWithMessagesAsync(id, ct);
+            if (ticket is null) return NotFound();
+
+            var result = await _attachments.OpenReadAsync(id, attachmentId, ct);
+            if (result is null) return NotFound();
+
+            var (info, stream) = result.Value;
+            var fileName = string.IsNullOrWhiteSpace(info.FileName) ? "archivo" : info.FileName;
+            var mime = string.IsNullOrWhiteSpace(info.MimeType) ? "application/octet-stream" : info.MimeType;
+
+            return File(stream, mime, fileName);
+        }
+
 
         public sealed class AdminReplyDto
         {

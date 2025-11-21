@@ -7,6 +7,7 @@ using System;
 using System.Security.Claims;
 using System.Threading;
 using System.Threading.Tasks;
+using EPApi.Services.Storage;
 
 namespace EPApi.Controllers
 {
@@ -21,11 +22,13 @@ namespace EPApi.Controllers
         private const string ConsentTypePsychotherapyGeneral = "psychotherapy_general";
         private const string ConsentVersionUniversalV1 = "universal_v1_2024-11";
         private readonly IOrgBillingProfileRepository _orgProfileRepo;
+        private readonly IFileStorage _fileStorage;
 
-        public PatientConsentsController(IPatientConsentsRepository repo, IOrgBillingProfileRepository orgProfileRepo)
+        public PatientConsentsController(IPatientConsentsRepository repo, IOrgBillingProfileRepository orgProfileRepo, IFileStorage fileStorage)
         {
             _repo = repo;
             _orgProfileRepo = orgProfileRepo;
+            _fileStorage = fileStorage;
         }
 
         /// <summary>
@@ -99,7 +102,8 @@ namespace EPApi.Controllers
             var countryCode = billingProfile.BillingAddress.CountryIso2.Trim().ToUpperInvariant();
             var language = LocalizationUtils.NormalizeLanguage(null, countryCode);
 
-            var id = await _repo.CreateAsync(
+            // 1) Creamos el consentimiento SIN guardar todavía la firma base64
+            var consentId = await _repo.CreateAsync(
                 patientId: patientId,
                 createdByUserId: userId,
                 consentType: ConsentTypePsychotherapyGeneral,
@@ -111,12 +115,33 @@ namespace EPApi.Controllers
                 signedName: body.SignedName.Trim(),
                 signedIdNumber: string.IsNullOrWhiteSpace(body.SignedIdNumber) ? null : body.SignedIdNumber.Trim(),
                 signedByRelationship: string.IsNullOrWhiteSpace(body.SignedByRelationship) ? "paciente" : body.SignedByRelationship.Trim(),
-                signatureUri: body.SignatureUri,
+                signatureUri: null, // ya no guardamos el data:image/... en DB
                 ipAddress: HttpContext.Connection.RemoteIpAddress?.ToString(),
                 userAgent: Request.Headers["User-Agent"].ToString(),
                 rawConsentText: body.RawConsentText,
                 ct: ct
             );
+
+            // 2) Procesamos la firma (data:image/png;base64,...) y la subimos a Azurite
+            try
+            {
+                var pngBytes = DecodePngDataUrl(body.SignatureUri!);
+                await using var ms = new MemoryStream(pngBytes);
+
+                var relativePath = StoragePathHelper.GetConsentSignaturePath(orgId, patientId, consentId);
+                var storedPath = await _fileStorage.SaveAsync(relativePath, ms, ct);
+
+                // 3) Actualizamos la columna signature_uri en DB con la ruta del blob
+                await _repo.UpdateSignatureUriAsync(consentId, storedPath, ct);
+            }
+            catch (Exception ex)
+            {
+                // Si algo falla en el manejo del archivo, devolvemos 500.
+                // (Puedes loguear ex con tu logger si lo tienes inyectado)
+                return Problem(
+                    detail: "El consentimiento fue creado pero ocurrió un error al guardar la firma.",
+                    statusCode: 500);
+            }
 
             var dto = await _repo.GetLatestAsync(patientId, ConsentTypePsychotherapyGeneral, ct);
 
@@ -129,9 +154,28 @@ namespace EPApi.Controllers
                 );
             }
 
-            // Devolvemos el DTO completo
+            // Devolvemos el DTO completo (SignatureUri ahora será la ruta del blob para los nuevos registros)
             return CreatedAtAction(nameof(GetLatest), new { patientId }, dto);
         }
+
+        /// <summary>
+        /// Devuelve la imagen de la firma del consentimiento como image/png.
+        /// </summary>
+        [HttpGet("{consentId:guid}/signature")]
+        public async Task<IActionResult> GetSignature(Guid patientId, Guid consentId, CancellationToken ct)
+        {
+            var orgId = GetOrgIdOrThrow();
+
+            var relativePath = StoragePathHelper.GetConsentSignaturePath(orgId, patientId, consentId);
+            var stream = await _fileStorage.OpenReadAsync(relativePath, ct);
+
+            if (stream is null)
+                return NotFound();
+
+            return File(stream, "image/png");
+        }
+
+
 
         // --------------------------------------------------------------------
         // Helpers (copiados del patrón de otros controllers)
@@ -144,5 +188,20 @@ namespace EPApi.Controllers
                 throw new UnauthorizedAccessException("No user id");
             return uid;
         }
+
+        private static byte[] DecodePngDataUrl(string dataUrl)
+        {
+            if (string.IsNullOrWhiteSpace(dataUrl))
+                throw new ArgumentException("Signature data URL is empty.", nameof(dataUrl));
+
+            const string prefix = "data:image/png;base64,";
+            var idx = dataUrl.IndexOf("base64,", StringComparison.OrdinalIgnoreCase);
+            if (idx < 0)
+                throw new InvalidOperationException("Signature data URL is not a valid PNG base64 data URI.");
+
+            var base64 = dataUrl.Substring(idx + "base64,".Length);
+            return Convert.FromBase64String(base64);
+        }
+
     }
 }

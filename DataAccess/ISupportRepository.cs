@@ -46,6 +46,8 @@ namespace EPApi.DataAccess
 
         Task<TicketWithMessages?> GetTicketWithMessagesForOrgAsync(Guid id, Guid orgId, CancellationToken ct = default);
 
+        Task<TicketWithMessages?> GetTicketWithMessagesAnyUserAsync(Guid id, int userId, CancellationToken ct = default);
+
         public sealed class AdminTicketRow
         {
             public Guid Id { get; init; }
