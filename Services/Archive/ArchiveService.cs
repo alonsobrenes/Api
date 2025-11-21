@@ -150,11 +150,11 @@ ORDER BY pf.deleted_at_utc;";
 INSERT INTO dbo.patient_files_archive
 (file_id, org_id, patient_id, original_name, content_type, byte_size,
 storage_provider, storage_key, sha256_hex, comment, uploaded_by_user,
-uploaded_at_utc, deleted_at_utc, archived_at_utc)
+uploaded_at_utc, deleted_at_utc, deleted_by_user_id, archived_at_utc)
 SELECT
 file_id, org_id, patient_id, original_name, content_type, byte_size,
 storage_provider, @newKey, sha256_hex, comment, uploaded_by_user,
-uploaded_at_utc, deleted_at_utc, SYSUTCDATETIME()
+uploaded_at_utc, deleted_at_utc, deleted_by_user_id, SYSUTCDATETIME()
 FROM dbo.patient_files WITH (HOLDLOCK, UPDLOCK)
 WHERE file_id = @id;
 

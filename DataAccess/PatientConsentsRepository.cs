@@ -199,6 +199,26 @@ VALUES (
             return id;
         }
 
+        public async Task<bool> UpdateSignatureUriAsync(
+    Guid consentId,
+    string signatureUri,
+    CancellationToken ct = default)
+        {
+            await using var conn = new SqlConnection(_connString);
+            await conn.OpenAsync(ct);
+
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = @"
+UPDATE dbo.patient_consents
+SET signature_uri = @suri
+WHERE id = @id;";
+            cmd.Parameters.Add(new SqlParameter("@id", SqlDbType.UniqueIdentifier) { Value = consentId });
+            cmd.Parameters.Add(new SqlParameter("@suri", SqlDbType.NVarChar, -1) { Value = signatureUri });
+
+            var rows = await cmd.ExecuteNonQueryAsync(ct);
+            return rows > 0;
+        }
+
         // -------------------------------------------------------------
 
         private static PatientConsentDto MapRow(SqlDataReader rd)

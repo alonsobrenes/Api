@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
+using EPApi.Services.Storage;
 
 namespace EPApi.Services
 {
@@ -26,6 +27,8 @@ namespace EPApi.Services
         Task<SupportAttachmentInfo> SaveAsync(Guid ticketId, int userId, IFormFile file, CancellationToken ct = default);
         Task<IReadOnlyList<SupportAttachmentInfo>> GetForTicketAsync(Guid ticketId, CancellationToken ct = default);
         Task DeleteAsync(Guid ticketId, Guid attachmentId, CancellationToken ct = default);
+        Task<(SupportAttachmentInfo Info, Stream Content)?> OpenReadAsync(Guid ticketId, Guid attachmentId, CancellationToken ct = default);
+
     }
 
     public class SupportAttachmentService : ISupportAttachmentService
@@ -33,6 +36,7 @@ namespace EPApi.Services
         private readonly string _cs;
         private readonly string _webRootPath;
         private readonly IConfiguration _cfg;
+        private readonly IFileStorage _fileStorage;
 
         // MIME/EXT permitidos v1
         private static readonly HashSet<string> AllowedExtensions = new(StringComparer.OrdinalIgnoreCase)
@@ -40,12 +44,13 @@ namespace EPApi.Services
             ".png", ".jpg", ".jpeg", ".webp", ".pdf"
         };
 
-        public SupportAttachmentService(IConfiguration cfg, IWebHostEnvironment env)
+        public SupportAttachmentService(IConfiguration cfg, IWebHostEnvironment env, IFileStorage fileStorage)
         {
             _cs = cfg.GetConnectionString("Default")
                 ?? throw new InvalidOperationException("Missing ConnectionStrings:Default");
             _webRootPath = env.WebRootPath ?? Path.Combine(AppContext.BaseDirectory, "wwwroot");
             _cfg = cfg;
+            _fileStorage = fileStorage;
         }
 
         public async Task<SupportAttachmentInfo> SaveAsync(Guid ticketId, int userId, IFormFile file, CancellationToken ct = default)
@@ -62,22 +67,19 @@ namespace EPApi.Services
                 throw new InvalidOperationException("Tipo de archivo no permitido. Usa PNG, JPG/JPEG, WEBP o PDF.");
 
             var attachmentId = Guid.NewGuid();
-            // Ruta física: wwwroot/uploads/support/{ticketIdN}/
-            var ticketFolderName = ticketId.ToString("N");
-            var relativeFolder = Path.Combine("uploads", "support", ticketFolderName);
-            var physicalFolder = Path.Combine(_webRootPath, relativeFolder);
-            Directory.CreateDirectory(physicalFolder);
+            var safeFileName = Path.GetFileName(file.FileName);
+            var mime = file.ContentType;
+            var size = file.Length;
 
-            var safeFileName = attachmentId.ToString("N") + ext.ToLowerInvariant();
-            var physicalPath = Path.Combine(physicalFolder, safeFileName);
-            var uri = "/" + Path.Combine(relativeFolder, safeFileName).Replace("\\", "/");
-            var baseUrl = _cfg["PublicBaseUrl"]; // ej: https://localhost:7250
-            var fullUrl = $"{baseUrl}{uri}";
+            var storageKey = StoragePathHelper.GetSupportTicketAttachmentPath(ticketId, attachmentId);
 
-            await using (var stream = new FileStream(physicalPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            await using (var blobStream = file.OpenReadStream())
             {
-                await file.CopyToAsync(stream, ct);
+                await _fileStorage.SaveAsync(storageKey, blobStream, ct);
             }
+
+            var uri = $"/api/support/tickets/{ticketId:D}/attachments/{attachmentId:D}";
+
 
             // Insert en DB
             await using (var conn = new SqlConnection(_cs))
@@ -93,7 +95,7 @@ VALUES
                 cmd.Parameters.Add(new SqlParameter("@tid", SqlDbType.UniqueIdentifier) { Value = ticketId });
                 cmd.Parameters.Add(new SqlParameter("@uid", SqlDbType.Int) { Value = userId });
                 cmd.Parameters.Add(new SqlParameter("@fname", SqlDbType.NVarChar, 260) { Value = file.FileName ?? safeFileName });
-                cmd.Parameters.Add(new SqlParameter("@uri", SqlDbType.NVarChar, 600) { Value = fullUrl });
+                cmd.Parameters.Add(new SqlParameter("@uri", SqlDbType.NVarChar, 600) { Value = uri });
                 cmd.Parameters.Add(new SqlParameter("@mime", SqlDbType.NVarChar, 100) { Value = file.ContentType ?? "application/octet-stream" });
                 cmd.Parameters.Add(new SqlParameter("@size", SqlDbType.Int) { Value = (int)file.Length });
 
@@ -104,12 +106,90 @@ VALUES
             {
                 Id = attachmentId,
                 FileName = file.FileName ?? safeFileName,
-                Uri = fullUrl,
+                Uri = uri,
                 MimeType = file.ContentType ?? "application/octet-stream",
                 SizeBytes = (int)file.Length,
                 CreatedAtUtc = DateTime.UtcNow
             };
         }
+
+        public async Task<(SupportAttachmentInfo Info, Stream Content)?> OpenReadAsync(
+    Guid ticketId,
+    Guid attachmentId,
+    CancellationToken ct = default)
+        {
+            // 1) Obtener metadata del adjunto
+            SupportAttachmentInfo? info = null;
+            string? uri = null;
+
+            await using (var conn = new SqlConnection(_cs))
+            {
+                await conn.OpenAsync(ct);
+                await using var cmd = conn.CreateCommand();
+                cmd.CommandText = @"
+SELECT id, ticket_id, file_name, uri, mime_type, size_bytes, created_at_utc
+FROM dbo.support_attachments
+WHERE id = @id AND ticket_id = @tid;";
+                cmd.Parameters.Add(new SqlParameter("@id", SqlDbType.UniqueIdentifier) { Value = attachmentId });
+                cmd.Parameters.Add(new SqlParameter("@tid", SqlDbType.UniqueIdentifier) { Value = ticketId });
+
+                await using var reader = await cmd.ExecuteReaderAsync(ct);
+                if (!await reader.ReadAsync(ct))
+                    return null;
+
+                var id = reader.GetGuid(0);
+                var tid = reader.GetGuid(1);
+                var fileName = reader.GetString(2);
+                uri = reader.IsDBNull(3) ? null : reader.GetString(3);
+                var mime = reader.IsDBNull(4) ? "application/octet-stream" : reader.GetString(4);
+                var size = reader.IsDBNull(5) ? 0 : reader.GetInt32(5);
+                var createdAt = reader.IsDBNull(6) ? DateTime.UtcNow : reader.GetDateTime(6);
+
+                info = new SupportAttachmentInfo
+                {
+                    Id = id,
+                    FileName = fileName,
+                    Uri = uri ?? "",
+                    MimeType = mime,
+                    SizeBytes = size,
+                    CreatedAtUtc = createdAt
+                };
+            }
+
+            // 2) Intentar Blob primero (nuevo esquema)
+            var storageKey = StoragePathHelper.GetSupportTicketAttachmentPath(ticketId, attachmentId);
+            var blobStream = await _fileStorage.OpenReadAsync(storageKey, ct);
+            if (blobStream != null)
+            {
+                return (info!, blobStream);
+            }
+
+            // 3) Fallback: adjuntos legacy en disco (wwwroot/uploads/support/...)
+            if (!string.IsNullOrWhiteSpace(uri))
+            {
+                const string marker = "/uploads/";
+                var idx = uri.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+                if (idx >= 0)
+                {
+                    var relativePath = uri.Substring(idx); // /uploads/support/xxx/yyy.ext
+
+                    var physicalPath = Path.Combine(
+                        _webRootPath,
+                        relativePath.TrimStart('/').Replace("/", Path.DirectorySeparatorChar.ToString())
+                    );
+
+                    if (File.Exists(physicalPath))
+                    {
+                        var fs = File.OpenRead(physicalPath);
+                        return (info!, fs);
+                    }
+                }
+            }
+
+            // 4) No existe en Blob ni en disco
+            return null;
+        }
+
 
         public async Task<IReadOnlyList<SupportAttachmentInfo>> GetForTicketAsync(Guid ticketId, CancellationToken ct = default)
         {
@@ -142,7 +222,6 @@ ORDER BY created_at_utc ASC;";
 
         public async Task DeleteAsync(Guid ticketId, Guid attachmentId, CancellationToken ct = default)
         {
-            // 1) Buscar el attachment y su URI
             string? uri = null;
 
             await using (var conn = new SqlConnection(_cs))
@@ -157,72 +236,56 @@ WHERE id = @id AND ticket_id = @tid;";
                     cmd.Parameters.Add(new SqlParameter("@id", SqlDbType.UniqueIdentifier) { Value = attachmentId });
                     cmd.Parameters.Add(new SqlParameter("@tid", SqlDbType.UniqueIdentifier) { Value = ticketId });
 
-                    var obj = await cmd.ExecuteScalarAsync(ct);
-                    if (obj == null || obj == DBNull.Value)
-                    {
-                        // No existe o no pertenece a ese ticket
-                        throw new InvalidOperationException("El adjunto no existe o no pertenece a este ticket.");
-                    }
-
-                    uri = (string)obj;
+                    var result = await cmd.ExecuteScalarAsync(ct);
+                    uri = result as string;
                 }
 
-                // 2) Borrar la fila
-                await using (var cmd2 = conn.CreateCommand())
+                // Borramos el registro SIEMPRE, independientemente del IO
+                await using (var cmdDel = conn.CreateCommand())
                 {
-                    cmd2.CommandText = @"
+                    cmdDel.CommandText = @"
 DELETE FROM dbo.support_attachments
 WHERE id = @id AND ticket_id = @tid;";
-                    cmd2.Parameters.Add(new SqlParameter("@id", SqlDbType.UniqueIdentifier) { Value = attachmentId });
-                    cmd2.Parameters.Add(new SqlParameter("@tid", SqlDbType.UniqueIdentifier) { Value = ticketId });
-
-                    await cmd2.ExecuteNonQueryAsync(ct);
+                    cmdDel.Parameters.Add(new SqlParameter("@id", SqlDbType.UniqueIdentifier) { Value = attachmentId });
+                    cmdDel.Parameters.Add(new SqlParameter("@tid", SqlDbType.UniqueIdentifier) { Value = ticketId });
+                    await cmdDel.ExecuteNonQueryAsync(ct);
                 }
             }
 
-            // 3) Intentar borrar el archivo físico (best-effort)
+            // NUEVO: intentar borrar en Blob/Azurite
+            try
+            {
+                var storageKey = StoragePathHelper.GetSupportTicketAttachmentPath(ticketId, attachmentId);
+                await _fileStorage.DeleteAsync(storageKey, ct);
+            }
+            catch
+            {
+                // Silencioso: no queremos romper por errores de storage externo
+            }
+
+            // Legacy: borrar archivo físico si la URI apunta a /uploads/...
             try
             {
                 if (!string.IsNullOrWhiteSpace(uri))
                 {
-                    try
+                    const string marker = "/uploads/";
+                    var idx = uri.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+
+                    if (idx >= 0)
                     {
-                        if (!string.IsNullOrWhiteSpace(uri))
+                        var relativePath = uri.Substring(idx);  // incluye el / inicial
+
+                        var physicalPath = Path.Combine(
+                            _webRootPath,
+                            relativePath.TrimStart('/').Replace("/", Path.DirectorySeparatorChar.ToString())
+                        );
+
+                        if (File.Exists(physicalPath))
                         {
-                            // uri puede ser:
-                            //   a) /uploads/support/...
-                            //   b) https://localhost:53793/uploads/support/...
-                            //
-                            // Buscamos dónde empieza "/uploads/"
-
-                            const string marker = "/uploads/";
-                            var idx = uri.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
-
-                            if (idx >= 0)
-                            {
-                                // Tomamos solo "/uploads/support/xxx/yyy.ext"
-                                var relativePath = uri.Substring(idx);  // incluye el / inicial
-
-                                // Convertir a ruta física:
-                                // wwwroot/uploads/support/xxx/yyy.ext
-                                var physicalPath = Path.Combine(
-                                    _webRootPath,
-                                    relativePath.TrimStart('/').Replace("/", Path.DirectorySeparatorChar.ToString())
-                                );
-
-                                if (File.Exists(physicalPath))
-                                {
-                                    File.Delete(physicalPath);
-                                }
-                            }
-                            // Si no encuentra "/uploads/", no borramos (URL incorrecto o storage externo)
+                            File.Delete(physicalPath);
                         }
                     }
-                    catch
-                    {
-                        // Silencioso. No debe fallar el delete por IO.
-                    }
-
+                    // Si no encuentra "/uploads/", asumimos que es una URI nueva (API, etc.) y no hay archivo físico legacy
                 }
             }
             catch
@@ -230,6 +293,5 @@ WHERE id = @id AND ticket_id = @tid;";
                 // No romper por errores de IO; el registro ya fue eliminado
             }
         }
-
     }
 }

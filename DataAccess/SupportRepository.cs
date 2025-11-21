@@ -618,6 +618,11 @@ ORDER BY m.created_at_utc ASC;";
             return ticket;
         }
 
+        public Task<TicketWithMessages?> GetTicketWithMessagesAnyUserAsync(Guid id, int userId,CancellationToken ct = default)
+        {
+            return GetTicketWithMessagesAsync(id, userId, ct);
+        }
+
 
         public sealed class TicketWithMessages
         {

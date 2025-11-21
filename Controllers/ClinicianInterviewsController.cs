@@ -37,6 +37,7 @@ namespace EPApi.Controllers
         private readonly IUsageService _usage;
         private readonly IStorageService _storage;
         private readonly string _cs;
+        private readonly IFileStorage _fileStorage;
 
         public ClinicianInterviewsController(
             IInterviewsRepository repo,
@@ -48,8 +49,8 @@ namespace EPApi.Controllers
             IHashtagService hashtag,
             IInterviewDraftService drafts,
             IUsageService usage,
-            IStorageService storage
-        )
+            IStorageService storage,
+            IFileStorage fileStorage)
         {
             _repo = repo;
             _stt = stt;
@@ -63,6 +64,7 @@ namespace EPApi.Controllers
             _storage = storage;
             _cs = cfg.GetConnectionString("Default")
                  ?? throw new InvalidOperationException("Missing connection string 'DefaultConnection'");
+            _fileStorage = fileStorage;
         }
 
         // Crea una entrevista vacía y devuelve su Id
@@ -143,6 +145,74 @@ namespace EPApi.Controllers
             });
         }
 
+        private async Task<bool> TryConsumeOrgStorageAsync(Guid orgId, long fileBytes, int limitGb, CancellationToken ct)
+        {
+            var allowedBytes = GiB(limitGb);
+
+            await using var cn = new SqlConnection(_cs);
+            await cn.OpenAsync(ct);
+            await using var tx = await cn.BeginTransactionAsync(IsolationLevel.Serializable, ct);
+
+            long usedBytes = 0;
+
+            const string Q1 = "SELECT used_bytes FROM dbo.org_storage WITH (UPDLOCK, HOLDLOCK) WHERE org_id = @org;";
+            await using (var cmd = new SqlCommand(Q1, cn, (SqlTransaction)tx))
+            {
+                cmd.Parameters.Add(new SqlParameter("@org", SqlDbType.UniqueIdentifier) { Value = orgId });
+                var obj = await cmd.ExecuteScalarAsync(ct);
+                usedBytes = (obj == null || obj == DBNull.Value)
+                    ? 0
+                    : Convert.ToInt64(obj, System.Globalization.CultureInfo.InvariantCulture);
+            }
+
+            if (usedBytes + fileBytes > allowedBytes)
+            {
+                await tx.RollbackAsync(ct);
+                return false;
+            }
+
+            const string UPD = @"
+IF EXISTS (SELECT 1 FROM dbo.org_storage WHERE org_id = @org)
+BEGIN
+    UPDATE dbo.org_storage
+    SET used_bytes = used_bytes + @bytes,
+        updated_at_utc = SYSUTCDATETIME()
+    WHERE org_id = @org;
+END
+ELSE
+BEGIN
+    INSERT INTO dbo.org_storage (org_id, used_bytes, updated_at_utc)
+    VALUES (@org, @bytes, SYSUTCDATETIME());
+END";
+
+            await using (var cmd = new SqlCommand(UPD, cn, (SqlTransaction)tx))
+            {
+                cmd.Parameters.Add(new SqlParameter("@org", SqlDbType.UniqueIdentifier) { Value = orgId });
+                cmd.Parameters.Add(new SqlParameter("@bytes", SqlDbType.BigInt) { Value = fileBytes });
+                await cmd.ExecuteNonQueryAsync(ct);
+            }
+
+            await tx.CommitAsync(ct);
+            return true;
+        }
+
+        [HttpGet("{id:guid}/audio")]
+        public async Task<IActionResult> GetInterviewAudio(Guid id, CancellationToken ct)
+        {
+            var audio = await _repo.GetLatestAudioAsync(id, ct);
+            if (audio is null)
+                return NotFound();
+
+            // audio es un tuple: (string Uri, string Mime)
+            var storageKey = audio.Value.Uri;
+            var mimeType = audio.Value.Mime ?? "application/octet-stream";
+
+            var stream = await _fileStorage.OpenReadAsync(storageKey, ct);
+            if (stream is null)
+                return NotFound();
+
+            return File(stream, mimeType);
+        }
 
         // ========================= AUDIO UPLOAD =========================
 
@@ -151,7 +221,7 @@ namespace EPApi.Controllers
         [HttpPost("{id:guid}/audio")]
         [Consumes("multipart/form-data")]
         [RequestSizeLimit(500_000_000)]
-        public async Task<IActionResult> UploadAudio(Guid id, [FromForm] Microsoft.AspNetCore.Http.IFormFile file, CancellationToken ct)
+        public async Task<IActionResult> UploadAudio(Guid id, [FromForm] IFormFile file, CancellationToken ct)
         {
             if (file == null || file.Length == 0) return BadRequest("Archivo vacío.");
 
@@ -179,24 +249,19 @@ namespace EPApi.Controllers
                 (ctLower.Contains("mpeg") || ctLower.Contains("mp3")) ? ".mp3" :
                 (ctLower.Contains("mp4") || ctLower.Contains("m4a") || ctLower.Contains("aac")) ? ".m4a" :
                 ".bin";
-
-            var root = _cfg.GetValue<string>("Uploads:Root")
-                       ?? Path.Combine(_env.ContentRootPath, "wwwroot", "uploads");
-
-            var folder = Path.Combine(root, "interviews", id.ToString("N"));
-            Directory.CreateDirectory(folder);
-
-            var fname = Guid.NewGuid().ToString("N") + ext;
-            var absPath = Path.Combine(folder, fname);
-            int sizeInGigabytes = (int)Math.Ceiling(file.Length / 1024.0 / 1024.0 / 1024.0);
-
-            await using (var fs = System.IO.File.Create(absPath))
+            var tempDir = Path.Combine(_env.WebRootPath, "temp");
+            Directory.CreateDirectory(tempDir);
+            var tempFile = Path.Combine(tempDir, Guid.NewGuid().ToString("N") + "." + ext);
+           
+            await using (var fs = System.IO.File.Create(tempFile))
+            {
                 await file.CopyToAsync(fs, ct);
+            }
 
             long? durationMs = null;
             try
             {
-                using var t = TagLib.File.Create(absPath); // absPath: ruta física ya guardada
+                using var t = TagLib.File.Create(tempFile); // absPath: ruta física ya guardada
                 durationMs = (long)Math.Round(t.Properties.Duration.TotalMilliseconds);
             }
             catch
@@ -204,34 +269,37 @@ namespace EPApi.Controllers
                 durationMs = 60000;
             }
 
-            var rel = $"/uploads/interviews/{id.ToString("N")}/{fname}";
-
-            var usageKey = $"stt-upload:{id}:{rel}";
-
             var limitGb = await _storage.GetStorageLimitGbAsync(orgId, ct);
-            var usedBytes = await _storage.GetOrgUsedBytesAsync(orgId, ct) ?? 0L;
-
             if (limitGb is null)
             {
-                System.IO.File.Delete(absPath);
+                System.IO.File.Delete(tempFile);
                 throw new UnauthorizedAccessException("No storage entitlement for org");
             }
 
-            var allowedBytes = GiB(limitGb.Value);
-
-            if (usedBytes + file.Length > allowedBytes)
+            var reserved = await TryConsumeOrgStorageAsync(orgId, file.Length, limitGb.Value, ct);
+            if (!reserved)
             {
-                try { System.IO.File.Delete(absPath); } catch { /* noop */ }
+                try { System.IO.File.Delete(tempFile); } catch { /* noop */ }
 
-                return Problem(statusCode: 402, title: "Límite del plan",
-                    detail: "Has alcanzado tu límite de almacenamiento. Considera comprar un add-on o cambiar de plan.");
-
+                return Problem(
+                    statusCode: 402,
+                    title: "Límite del plan",
+                    detail: "Has alcanzado tu límite de almacenamiento. Considera comprar un add-on o cambiar de plan."
+                );
             }
-            
-            await _repo.AddAudioAsync(id, rel, file.ContentType, durationMs, ct);            
-            await _repo.SetStatusAsync(id, "uploaded", ct);
 
-            return Ok(new { uri = rel });
+            var storageKey = StoragePathHelper.GetInterviewAudioPath(orgId, id, ext);
+
+            // 5) Subir el audio a Blob/Azurite via IFileStorage
+            await using (var uploadStream = System.IO.File.OpenRead(tempFile))
+            {
+                await _fileStorage.SaveAsync(storageKey, uploadStream, ct);
+            }
+
+            await _repo.AddAudioAsync(id, storageKey, file.ContentType, durationMs, ct);            
+            await _repo.SetStatusAsync(id, "uploaded", ct);
+            try { System.IO.File.Delete(tempFile); } catch { /* noop */ }
+            return Ok(new { uri = storageKey });
         }
 
         // ========================= TRANSCRIBIR ==========================
@@ -249,102 +317,6 @@ namespace EPApi.Controllers
             remainSec = seconds;
             return true;
         }
-
-        //[HttpPost("{id:guid}/transcribe")]
-        //public async Task<IActionResult> Transcribe(Guid id, [FromQuery] bool force = false, CancellationToken ct = default)
-        //{
-        //    // cooldown 20s (solo si no se fuerza)
-        //    if (!force && !TryAcquireTranscribeCooldown(id, 20, out var _))
-        //        return StatusCode(429, new { message = "Operación en enfriamiento.", retryAfterSec = 20 });
-
-        //    // === Trial expirado → 402 (igual patrón que en otros endpoints)
-        //    var orgId = await RequireOrgIdAsync(ct);
-        //    if (await _billing.IsTrialExpiredAsync(orgId, DateTime.UtcNow, ct))
-        //        return StatusCode(402, new { message = "Tu período de prueba expiró. Elige un plan para continuar." });
-
-        //    try
-        //    {
-        //        // Cache: si ya existe y no pidieron force, devolvemos último texto
-        //        if (!force)
-        //        {
-        //            var cached = await _repo.GetLatestTranscriptTextAsync(id, ct);
-        //            if (!string.IsNullOrWhiteSpace(cached))
-        //                return Ok(new { language = "es", text = cached, cached = true });
-        //        }
-
-        //        // Localiza el archivo: BD -> disco; si no, recorre carpeta
-        //        var latest = await _repo.GetLatestAudioAsync(id, ct);
-        //        string? absPath = null;
-
-        //        if (latest is not null)
-        //        {
-        //            absPath = ResolveAbsoluteUploadPath(latest.Value.Uri);
-        //            if (!System.IO.File.Exists(absPath)) absPath = null;
-        //        }
-
-        //        if (absPath is null)
-        //        {
-        //            var root = _cfg.GetValue<string>("Uploads:Root")
-        //                       ?? Path.Combine(_env.ContentRootPath, "wwwroot", "uploads");
-        //            var folder = Path.Combine(root, "interviews", id.ToString("N"));
-
-        //            if (!Directory.Exists(folder))
-        //                return BadRequest("No hay audio registrado para esta entrevista (ni archivos en disco).");
-
-        //            var files = new DirectoryInfo(folder).GetFiles();
-        //            if (files.Length == 0)
-        //                return BadRequest("No hay audio registrado para esta entrevista (carpeta vacía).");
-
-        //            Array.Sort(files, (a, b) => b.CreationTimeUtc.CompareTo(a.CreationTimeUtc));
-        //            absPath = files[0].FullName;
-
-        //            // Si BD no tenía fila, registra ahora
-        //            if (latest is null)
-        //            {
-        //                var rootNorm = (_cfg.GetValue<string>("Uploads:Root")
-        //                                 ?? Path.Combine(_env.ContentRootPath, "wwwroot", "uploads"))
-        //                               .TrimEnd('\\', '/');
-
-        //                var relUri = absPath.Replace(rootNorm, "").Replace("\\", "/");
-        //                if (!relUri.StartsWith("/")) relUri = "/" + relUri;
-
-        //                await _repo.AddAudioAsync(id, relUri, GetMimeFromExtension(Path.GetExtension(absPath)), null, ct);
-        //            }
-        //        }
-
-        //        await _repo.SetStatusAsync(id, "transcribing", ct);
-
-        //        var (lang, text, wordsJson, durationMs) = await _stt.TranscribeAsync(absPath!, ct);
-
-        //        await _repo.SaveTranscriptAsync(id, lang, text, wordsJson, ct);
-
-        //        //TimeSpan duration = TimeSpan.FromMilliseconds( (double)durationMs);
-        //        //int minutes = (int)duration.TotalMinutes;
-
-        //        int minutes = 1; // default mínimo de 1 minuto
-        //        if (durationMs.HasValue && durationMs.Value > 0)
-        //        {
-        //            var duration = TimeSpan.FromMilliseconds(durationMs.Value);
-        //            minutes = Math.Max(1, (int)Math.Round(duration.TotalMinutes));
-        //        }
-
-        //        var idemKey = $"transcript-auto:{id}:{orgId}";
-        //        var gate = await _usage.TryConsumeAsync(orgId, "stt.minutes.monthly", minutes, idemKey, ct);
-        //        if (!gate.Allowed)
-        //            return StatusCode(402, new { message = "Has alcanzado el límite mensual de minutos de Transcripción para tu plan." });
-
-        //        return Ok(new { language = lang, text, cached = false });
-        //    }
-        //    catch (RateLimitException rlex)
-        //    {
-        //        return StatusCode(429, new { message = rlex.Message, retryAfterSec = rlex.RetryAfterSeconds });
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        Console.Error.WriteLine($"[Transcribe] Interview={id} Error={ex.GetType().Name} {ex.Message}\n{ex.StackTrace}");
-        //        return StatusCode(500, $"Transcripción fallida: {ex.Message}");
-        //    }
-        //}
 
         [HttpPost("{id:guid}/transcribe")]
         public async Task<IActionResult> Transcribe(Guid id, [FromQuery] bool force = false, CancellationToken ct = default)

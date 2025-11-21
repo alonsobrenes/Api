@@ -2,8 +2,9 @@
 using Microsoft.Extensions.Configuration;
 using System.Net;
 using System.Net.Http.Headers;
-using static EPApi.Controllers.ClinicianInterviewsController;
+using System.Runtime.ConstrainedExecution;
 using TagLib;
+using static EPApi.Controllers.ClinicianInterviewsController;
 
 namespace EPApi.Services
 {
@@ -23,6 +24,66 @@ namespace EPApi.Services
             _apiKey = cfg["OpenAI:ApiKey"] ?? Environment.GetEnvironmentVariable("OPENAI_API_KEY")
                       ?? throw new InvalidOperationException("Missing OpenAI API key");
         }
+
+        private static bool IsLikelyNoSpeech(long? durationMs, string text)
+        {
+            var trimmed = (text ?? string.Empty).Trim();
+
+            // Si no hay nada de texto, claramente "no speech"
+            if (string.IsNullOrEmpty(trimmed))
+                return true;
+
+            // Si el audio dura bastante y el texto es ultra corto (ej: "sí", "no")
+            // este es un caso delicado. Vamos a ser MUY conservadores:
+            // solo lo marcamos como sospechoso si dura al menos 5s y el texto es de 1-2 caracteres.
+            if (durationMs.HasValue && durationMs.Value >= 5000 && trimmed.Length <= 2)
+                return true;
+
+            return false;
+        }
+
+
+        private static string SanitizeTranscription(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+                return text ?? string.Empty;
+
+            var cleaned = text;
+
+            string[] tails =
+            {
+        "Subtítulos realizados por la comunidad de Amara.org",
+        "Subtitulos realizados por la comunidad de Amara.org",
+        "¡Gracias por ver el video y por compartirlo con tus amigos!",
+        "¡Gracias por ver el video!"
+    };
+
+            foreach (var tail in tails)
+            {
+                var idx = cleaned.IndexOf(tail, StringComparison.OrdinalIgnoreCase);
+                if (idx >= 0)
+                {
+                    cleaned = cleaned[..idx].TrimEnd();
+                }
+            }
+
+            while (cleaned.EndsWith(".") || cleaned.EndsWith("…"))
+            {
+                // si queda una frase de verdad, dejamos uno solo, si no, quitamos todos
+                var trimmed = cleaned.TrimEnd('.', '…');
+                if (trimmed.Length == 0)
+                {
+                    cleaned = string.Empty;
+                    break;
+                }
+
+                cleaned = trimmed;
+            }
+
+            // Opcional: limpiar espacios y saltos extra al final
+            return cleaned.TrimEnd();
+        }
+
 
         public async Task<(string? language, string text, string? wordsJson, long? DurationMs)> TranscribeAsync(string absolutePath, CancellationToken ct = default)
         {
@@ -45,7 +106,8 @@ namespace EPApi.Services
                 using var form = new MultipartFormDataContent
                 {
                     { new StringContent("whisper-1"), "model" },
-                    { new StringContent("es"), "language" }, // opcional
+                    { new StringContent("es"), "language" },
+                    { new StringContent("0"), "temperature" }
                 };
 
                 var fileName = Path.GetFileName(absolutePath);
@@ -53,8 +115,9 @@ namespace EPApi.Services
                 await using var fs = System.IO.File.OpenRead(absolutePath);
                 var fileContent = new StreamContent(fs);
                 fileContent.Headers.ContentType = new MediaTypeHeaderValue(mime);
+
                 form.Add(fileContent, "file", fileName);
-                form.Add(new StringContent("es"), "language");
+                //form.Add(new StringContent("es"), "language");
 
                 using var resp = await client.PostAsync("v1/audio/transcriptions", form, timeoutCts.Token);
                 var body = await resp.Content.ReadAsStringAsync(timeoutCts.Token);
@@ -75,7 +138,14 @@ namespace EPApi.Services
                 {
                     var json = System.Text.Json.JsonDocument.Parse(body).RootElement;
                     var text = json.TryGetProperty("text", out var t) ? t.GetString() ?? "" : "";
-                    return ("es", text, null, durationMs);
+                    var cleaned = SanitizeTranscription(text);
+
+                    if (IsLikelyNoSpeech(durationMs, cleaned))
+                    {                        
+                        return ("es", string.Empty, null, durationMs);
+                    }
+
+                    return ("es", cleaned, null, durationMs);
                 }
 
                 // Manejo amable de rate limit

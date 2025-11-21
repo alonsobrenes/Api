@@ -17,9 +17,25 @@ namespace EPApi.Models
             "image/jpeg"
         };
 
+        public BlobStorageOptions Blob { get; set; } = new();
+
         public sealed class LocalOptions
         {
             public string Root { get; set; } = "./data/storage";
         }
+
+        public sealed class BlobStorageOptions
+        {
+            /// <summary>
+            /// Connection string de Azure Storage o Azurite.
+            /// </summary>
+            public string? ConnectionString { get; set; }
+
+            /// <summary>
+            /// Nombre del contenedor donde se guardarán los archivos (ej: "files").
+            /// </summary>
+            public string ContainerName { get; set; } = "files";
+        }
+
     }
 }

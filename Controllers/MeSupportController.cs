@@ -149,7 +149,7 @@ namespace EPApi.Controllers
                 attachments = attachments.Select(a => new {
                     id = a.Id,
                     fileName = a.FileName,
-                    uri = a.Uri,
+                    uri = $"/api/me/support/{id}/attachments/{a.Id}",
                     mimeType = a.MimeType,
                     sizeBytes = a.SizeBytes,
                     createdAtUtc = a.CreatedAtUtc
@@ -202,7 +202,7 @@ namespace EPApi.Controllers
                 {
                     id = info.Id,
                     fileName = info.FileName,
-                    uri = info.Uri,
+                    uri = $"/api/me/support/{id}/attachments/{info.Id}",
                     mimeType = info.MimeType,
                     sizeBytes = info.SizeBytes,
                     createdAtUtc = info.CreatedAtUtc                    
@@ -212,6 +212,26 @@ namespace EPApi.Controllers
             {
                 return BadRequest(new { error = ex.Message });
             }
+        }
+        
+        [HttpGet("{ticketId:guid}/attachments/{attachmentId:guid}")]
+        public async Task<IActionResult> DownloadAttachment(Guid ticketId, Guid attachmentId, CancellationToken ct)
+        {
+            var uid = RequireUserId();
+
+            // 1) Validar que el ticket le pertenece al usuario
+            var ticket = await _repo.GetTicketWithMessagesAsync(ticketId, uid, ct);
+            if (ticket is null) return NotFound();
+
+            // 2) Obtener contenido desde Blob (con fallback a disco legacy dentro del servicio)
+            var result = await _attachments.OpenReadAsync(ticketId, attachmentId, ct);
+            if (result is null) return NotFound();
+
+            var (info, stream) = result.Value;
+            var fileName = string.IsNullOrWhiteSpace(info.FileName) ? "archivo" : info.FileName;
+            var mime = string.IsNullOrWhiteSpace(info.MimeType) ? "application/octet-stream" : info.MimeType;
+
+            return File(stream, mime, fileName);
         }
 
         [HttpPatch("{id:guid}/status")]
