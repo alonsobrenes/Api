@@ -26,5 +26,36 @@ WHERE m.org_id = @orgId
             var o = await cmd.ExecuteScalarAsync(ct);
             return Convert.ToInt32(o);
         }
+
+        public async Task<string?> GetLogoUrlAsync(Guid orgId, CancellationToken ct)
+        {
+            const string sql = @"
+        SELECT logo_url
+        FROM orgs
+        WHERE id = @orgId";
+
+            await using var con = new SqlConnection(_cs);
+            await con.OpenAsync(ct);
+            await using var cmd = new SqlCommand(sql, con);
+            cmd.Parameters.AddWithValue("@orgId", orgId);
+            var o = await cmd.ExecuteScalarAsync(ct);
+            return o as string;
+        }
+
+        public async Task UpdateLogoUrlAsync(Guid orgId, string? logoUrl, CancellationToken ct)
+        {
+            const string sql = @"
+        UPDATE orgs
+        SET logo_url = @logoUrl
+        WHERE id = @orgId";
+
+            await using var con = new SqlConnection(_cs);
+            await con.OpenAsync(ct);
+            await using var cmd = new SqlCommand(sql, con);
+            cmd.Parameters.AddWithValue("@orgId", orgId);
+            cmd.Parameters.AddWithValue("@logoUrl", logoUrl);
+            await cmd.ExecuteNonQueryAsync(ct);            
+        }
+
     }
 }

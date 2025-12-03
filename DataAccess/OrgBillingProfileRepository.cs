@@ -7,7 +7,7 @@ namespace EPApi.DataAccess
     public interface IOrgBillingProfileRepository
     {
         Task<BillingProfileDto?> GetAsync(Guid orgId, CancellationToken ct = default);
-        Task UpsertAsync(Guid orgId, BillingProfileDto dto, CancellationToken ct = default);
+        Task UpsertAsync(Guid orgId, BillingProfileDto dto, CancellationToken ct = default);        
     }
 
     public sealed  class OrgBillingProfileRepository : IOrgBillingProfileRepository
@@ -22,12 +22,12 @@ namespace EPApi.DataAccess
         {
             const string sql = @"
 SELECT TOP 1
-  legal_name, trade_name, tax_id,
-  contact_email, contact_phone, website,
-  bill_line1, bill_line2, bill_city, bill_state_region, bill_postal_code, bill_country_iso2,
-  ship_line1, ship_line2, ship_city, ship_state_region, ship_postal_code, ship_country_iso2
-FROM dbo.org_billing_profiles
-WHERE org_id = @orgId;";
+  b.legal_name, b.trade_name, b.tax_id,
+  b.contact_email, b.contact_phone, b.website,
+  b.bill_line1, b.bill_line2, b.bill_city, b.bill_state_region, b.bill_postal_code, b.bill_country_iso2,
+  b.ship_line1, b.ship_line2, b.ship_city, b.ship_state_region, b.ship_postal_code, b.ship_country_iso2
+FROM dbo.org_billing_profiles b (NOLOCK)
+WHERE b.org_id = @orgId;";
 
             await using var con = new SqlConnection(_cs);
             await con.OpenAsync(ct);
@@ -86,12 +86,14 @@ INSERT INTO dbo.org_billing_profiles(
   org_id, legal_name, trade_name, tax_id,
   contact_email, contact_phone, website,
   bill_line1, bill_line2, bill_city, bill_state_region, bill_postal_code, bill_country_iso2,
-  ship_line1, ship_line2, ship_city, ship_state_region, ship_postal_code, ship_country_iso2
+  ship_line1, ship_line2, ship_city, ship_state_region, ship_postal_code, ship_country_iso2,
+  logo_url
 ) VALUES (
   @org_id, @legal_name, @trade_name, @tax_id,
   @contact_email, @contact_phone, @website,
   @bill_line1, @bill_line2, @bill_city, @bill_state_region, @bill_postal_code, @bill_country_iso2,
-  @ship_line1, @ship_line2, @ship_city, @ship_state_region, @ship_postal_code, @ship_country_iso2
+  @ship_line1, @ship_line2, @ship_city, @ship_state_region, @ship_postal_code, @ship_country_iso2,
+  @logo_url
 );";
 
             await using var con = new SqlConnection(_cs);
@@ -146,6 +148,8 @@ INSERT INTO dbo.org_billing_profiles(
             cmd.Parameters.AddWithValue("@ship_state_region", (object?)s?.StateRegion ?? DBNull.Value);
             cmd.Parameters.AddWithValue("@ship_postal_code", (object?)s?.PostalCode ?? DBNull.Value);
             cmd.Parameters.AddWithValue("@ship_country_iso2", (object?)s?.CountryIso2 ?? DBNull.Value);
+
         }
+
     }
 }

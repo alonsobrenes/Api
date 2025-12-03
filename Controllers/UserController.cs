@@ -4,6 +4,7 @@ using EPApi.Services.Storage;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
+using static System.Net.Mime.MediaTypeNames;
 
 namespace EPApi.Controllers
 {
@@ -49,10 +50,9 @@ namespace EPApi.Controllers
             });
         }
 
-        [AllowAnonymous]
         [HttpGet("{id:int}/avatar")]
         public async Task<IActionResult> GetAvatar(int id, CancellationToken ct)
-        {
+        {            
             // 1) Intentar leer desde Blob/Azurite (nuevo esquema)
             var exts = new[] { ".jpg", ".jpeg", ".png", ".webp", ".img" };
             foreach (var ext in exts)
@@ -73,7 +73,7 @@ namespace EPApi.Controllers
                 }
             }
 
-            // 2) Fallback: avatares legacy en /wwwroot/uploads/avatars
+            //2) Fallback: avatares legacy en / wwwroot / uploads / avatars
             var user = await _repo.GetByIdAsync(id, ct);
             if (user?.AvatarUrl is string url &&
                 url.Contains("/uploads/avatars/", StringComparison.OrdinalIgnoreCase))
@@ -117,7 +117,6 @@ namespace EPApi.Controllers
 
             var id = GetUserId();
             
-
             var ext = Path.GetExtension(file.FileName);
             if (string.IsNullOrWhiteSpace(ext))
             {
@@ -132,12 +131,11 @@ namespace EPApi.Controllers
 
             var extNoDot = ext.TrimStart('.');
             var storageKey = StoragePathHelper.GetUserAvatarPath(id, extNoDot);
-            
 
-            await using (var stream = file.OpenReadStream())
-            {
-                await _fileStorage.SaveAsync(storageKey, stream, ct);
-            }
+            using var ms = new MemoryStream();
+            await file.CopyToAsync(ms, ct);
+            ms.Position = 0;
+            await _fileStorage.SaveAsync(storageKey, ms, ct);
 
             var baseUrl = $"{Request.Scheme}://{Request.Host}{Request.PathBase}";
             var rev = Guid.NewGuid().ToString("N"); // para cache-busting

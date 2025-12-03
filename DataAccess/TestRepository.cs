@@ -681,7 +681,7 @@ DECLARE @hasPractices bit =
 
 ;WITH T AS (
     SELECT
-        t.id, t.code, t.name, t.description, t.pdf_url, t.is_active,
+        t.id, t.code, t.name, t.description, t.instructions, t.pdf_url, t.is_active,
         t.created_at, t.updated_at,
         ag.code AS age_group_code, ag.name AS age_group_name,
         (SELECT COUNT(*) FROM dbo.test_questions  q WHERE q.test_id = t.id) AS question_count,
@@ -741,7 +741,7 @@ SELECT COUNT(1) AS total FROM T;
 
 WITH T AS (
     SELECT
-        t.id, t.code, t.name, t.description, t.pdf_url, t.is_active,
+        t.id, t.code, t.name, t.description, t.instructions, t.pdf_url, t.is_active,
         t.created_at, t.updated_at,
         ag.code AS age_group_code, ag.name AS age_group_name,
         (SELECT COUNT(*) FROM dbo.test_questions  q WHERE q.test_id = t.id) AS question_count,
@@ -839,14 +839,15 @@ OFFSET (@off) ROWS FETCH NEXT (@ps) ROWS ONLY;
                             Code = rd.GetString(1),
                             Name = rd.GetString(2),
                             Description = rd.IsDBNull(3) ? null : rd.GetString(3),
-                            PdfUrl = rd.IsDBNull(4) ? null : rd.GetString(4),
-                            IsActive = rd.GetBoolean(5),
-                            CreatedAt = rd.GetDateTime(6),
-                            UpdatedAt = rd.GetDateTime(7),
-                            AgeGroupCode = rd.GetString(8),
-                            AgeGroupName = rd.GetString(9),
-                            QuestionCount = rd.GetInt32(10),
-                            ScaleCount = rd.GetInt32(11)
+                            Instructions = rd.IsDBNull(4) ? null : rd.GetString(4),
+                            PdfUrl = rd.IsDBNull(5) ? null : rd.GetString(5),
+                            IsActive = rd.GetBoolean(6),
+                            CreatedAt = rd.GetDateTime(7),
+                            UpdatedAt = rd.GetDateTime(8),
+                            AgeGroupCode = rd.GetString(9),
+                            AgeGroupName = rd.GetString(10),
+                            QuestionCount = rd.GetInt32(11),
+                            ScaleCount = rd.GetInt32(12)
                         });
                     }
                 }

@@ -22,5 +22,6 @@
 
         public AddressDto BillingAddress { get; set; } = new AddressDto();
         public AddressDto? ShippingAddress { get; set; }
+       
     }
 }

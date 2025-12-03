@@ -85,5 +85,15 @@ namespace EPApi.Services.Storage
             var fileIdN = fileId.ToString("N");
             return $"support/tickets/{ticketIdN}/{fileIdN}";
         }
+
+        /// <summary>
+        /// Adjuntos de tickets de soporte (core, sin cuota).
+        ///   support/tickets/{ticketIdN}/{fileIdN}
+        /// </summary>
+        public static string GetOrgBrandingLogotPath(Guid orgId)
+        {
+            var orgIdN = orgId.ToString("N");
+            return $"core/orgs/{orgIdN}/branding/logo.png";
+        }
     }
 }
