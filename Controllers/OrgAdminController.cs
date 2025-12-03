@@ -18,13 +18,15 @@ namespace EPApi.Controllers
         private readonly IConfiguration _cfg;
         private readonly IHostEnvironment _env;
         private readonly IEmailSender _email;
+        private readonly IOrgRepository _orgRepository;
 
-        public OrgAdminController(BillingRepository billingRepo, IConfiguration cfg, IHostEnvironment env, IEmailSender email)
+        public OrgAdminController(BillingRepository billingRepo, IConfiguration cfg, IHostEnvironment env, IEmailSender email, IOrgRepository orgRepository )
         {
             _billingRepo = billingRepo;
             _cfg = cfg;
             _env = env;
             _email = email;
+            _orgRepository = orgRepository;
         }
 
         public sealed record OrgSummaryDto(string planCode, string status, int seats, string kind);
