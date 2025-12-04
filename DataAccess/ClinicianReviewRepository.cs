@@ -1,7 +1,8 @@
 ﻿// DataAccess/ClinicianReviewRepository.cs
-using System.Data;
 using EPApi.Models;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.SqlClient;
+using System.Data;
 
 namespace EPApi.DataAccess
 {
@@ -387,9 +388,145 @@ VALUES (@rid, @areas, @inter, @estr, @imp, @aj, @mad, @real, @expr);";
             }
         }
 
-        // DataAccess/ClinicianReviewRepository.cs (dentro de la clase existente)
+        public async Task<IReadOnlyList<ClinicianOrgPatientContactStatsDto>> GetOrgPatientsByProfessionalAsync(
+    Guid orgId,
+    DateTime fromUtc,
+    DateTime toUtc,
+    CancellationToken ct = default)
+        {
+            const string SQL = @"
+WITH RawEvents AS (
+    -- Tests aplicados
+    SELECT
+        CAST(COALESCE(a.completed_at, a.updated_at, a.started_at, a.created_at) AS date) AS [date],
+        a.patient_id,
+        a.assigned_by_user_id AS clinician_user_id,
+        N'test' AS kind
+    FROM dbo.test_attempts a
+    INNER JOIN dbo.patients p
+        ON p.id = a.patient_id
+    WHERE a.status IN (N'reviewed', N'auto_done', N'finished')
+      AND COALESCE(a.completed_at, a.updated_at, a.started_at, a.created_at) >= @from
+      AND COALESCE(a.completed_at, a.updated_at, a.started_at, a.created_at) <  @to
+      AND a.assigned_by_user_id IS NOT NULL
 
-        // DataAccess/ClinicianReviewRepository.cs  (reemplaza el método completo)
+    UNION ALL
+
+    -- Sesiones clínicas
+    SELECT
+        CAST(COALESCE(s.updated_at_utc, s.created_at_utc) AS date) AS [date],
+        s.patient_id,
+        s.created_by_user_id AS clinician_user_id,
+        N'session' AS kind
+    FROM dbo.patient_sessions s
+    INNER JOIN dbo.patients p
+        ON p.id = s.patient_id
+    WHERE s.org_id = @orgId
+      AND s.deleted_at_utc IS NULL
+      AND COALESCE(s.updated_at_utc, s.created_at_utc) >= @from
+      AND COALESCE(s.updated_at_utc, s.created_at_utc) <  @to
+      AND s.created_by_user_id IS NOT NULL
+
+    UNION ALL
+
+    -- Entrevistas
+    SELECT
+        CAST(COALESCE(i.ended_at_utc, i.started_at_utc) AS date) AS [date],
+        i.patient_id,
+        i.clinician_user_id AS clinician_user_id,
+        N'interview' AS kind
+    FROM dbo.interviews i
+    INNER JOIN dbo.patients p
+        ON p.id = i.patient_id
+    WHERE COALESCE(i.ended_at_utc, i.started_at_utc) >= @from
+      AND COALESCE(i.ended_at_utc, i.started_at_utc) <  @to
+      AND i.clinician_user_id IS NOT NULL
+),
+Agg AS (
+    SELECT
+        clinician_user_id,
+        patient_id,
+        COUNT_BIG(*) AS contacts,
+        SUM(CASE WHEN kind = N'test' THEN 1 ELSE 0 END)       AS tests,
+        SUM(CASE WHEN kind = N'session' THEN 1 ELSE 0 END)    AS sessions,
+        SUM(CASE WHEN kind = N'interview' THEN 1 ELSE 0 END)  AS interviews
+    FROM RawEvents
+    GROUP BY clinician_user_id, patient_id
+)
+SELECT
+    u.id              AS clinician_user_id,
+    u.email           AS clinician_email,
+
+    p.id              AS patient_id,
+    p.first_name      AS patient_first_name,
+    p.last_name1      AS patient_last_name1,
+    p.last_name2      AS patient_last_name2,
+    p.contact_email   AS patient_email,
+
+    Agg.contacts      AS contacts_count,
+    Agg.tests         AS tests_count,
+    Agg.sessions      AS sessions_count,
+    Agg.interviews    AS interviews_count
+FROM Agg
+  INNER JOIN dbo.org_members m
+      ON m.user_id = Agg.clinician_user_id
+     AND m.org_id = @orgId
+     AND m.disabled_at_utc IS NULL
+  INNER JOIN dbo.users u
+      ON u.id = m.user_id
+  INNER JOIN dbo.patients p
+      ON p.id = Agg.patient_id
+ORDER BY
+    u.email,
+    p.first_name,
+    p.last_name1;
+";
+
+            var result = new List<ClinicianOrgPatientContactStatsDto>();
+
+            await using var cn = new SqlConnection(_cs);
+            await cn.OpenAsync(ct);
+            await using var cmd = new SqlCommand(SQL, cn);
+
+            cmd.Parameters.AddWithValue("@orgId", orgId);
+            cmd.Parameters.AddWithValue("@from", fromUtc);
+            cmd.Parameters.AddWithValue("@to", toUtc);
+
+            try
+            {
+                await using var rd = await cmd.ExecuteReaderAsync(ct);
+                while (await rd.ReadAsync(ct))
+                {
+                    var dto = new ClinicianOrgPatientContactStatsDto
+                    {
+                        ClinicianUserId = rd.GetInt32(0),
+                        ClinicianEmail = rd.GetString(1),
+                        PatientId = rd.GetGuid(2),
+                        PatientFirstName = rd.GetString(3),
+                        PatientLastName1 = rd.GetString(4),
+                        PatientLastName2 = rd.GetString(5),
+                        PatientEmail = rd.GetString(6),
+                        ContactsCount= rd.IsDBNull(7) ? 0 : (int)rd.GetInt64(7),
+                        TestsCount = rd.IsDBNull(8) ? 0 : (int)rd.GetInt32(8),
+                        SessionsCount =rd.IsDBNull(9) ? 0 : (int)rd.GetInt32(9),
+                        InterviewsCount =rd.IsDBNull(10) ? 0 : (int)rd.GetInt32(10),
+                    };
+
+                    result.Add(dto);
+                }
+            }
+            catch (Exception)
+            {
+
+                throw;
+            }
+            
+
+            return result;
+        }
+
+
+
         public async Task<IEnumerable<PatientAssessmentRow>> ListAssessmentsByPatientAsync(
                  Guid patientId,
                 int? viewerUserId,
@@ -729,6 +866,157 @@ WHERE id = @id;";
         }
 
         
+        public async Task<PatientsByPeriodStatsDto> GetPatientsByPeriodStatsAsync(
+    DateTime fromUtc,
+    DateTime toUtc,
+    int? clinicianUserId,
+    bool isAdmin,
+    CancellationToken ct = default)
+        {
+            // Unificamos "eventos de atención" de 3 fuentes:
+            //  - test_attempts (tests aplicados)
+            //  - patient_sessions (sesiones / notas)
+            //  - interviews (entrevistas)
+            //
+            // Cada fila de RawEvents = (fecha, patient_id).
+            // Luego agregamos en C# para construir detalles + summary + series.
+
+            const string SQL = @"
+WITH RawEvents AS (
+    -- Tests aplicados
+    SELECT
+        CAST(a.started_at AS date) AS [date],
+        a.patient_id
+    FROM dbo.test_attempts a
+    JOIN dbo.patients p ON p.id = a.patient_id
+    WHERE a.status IN (N'reviewed', N'auto_done', N'finished')
+      AND COALESCE(a.completed_at, a.updated_at, a.started_at, a.created_at) >= @from
+      AND COALESCE(a.completed_at, a.updated_at, a.started_at, a.created_at) <  @to
+      AND (
+            @isAdmin = 1 OR @uid IS NULL OR
+            p.created_by_user_id = @uid
+          )
+
+    UNION ALL
+
+    -- Sesiones (patient_sessions)
+    SELECT
+        CAST(s.created_at_utc AS date) AS [date],
+        s.patient_id
+    FROM dbo.patient_sessions s
+    JOIN dbo.patients p ON p.id = s.patient_id
+    WHERE s.deleted_at_utc IS NULL
+      AND COALESCE(s.updated_at_utc, s.created_at_utc) >= @from
+      AND COALESCE(s.updated_at_utc, s.created_at_utc) <  @to
+      AND (
+            @isAdmin = 1 OR @uid IS NULL OR
+            p.created_by_user_id = @uid
+          )
+
+    UNION ALL
+
+    -- Entrevistas
+    SELECT
+        CAST(i.started_at_utc AS date) AS [date],
+        i.patient_id
+    FROM dbo.interviews i
+    JOIN dbo.patients p ON p.id = i.patient_id
+    WHERE COALESCE(i.ended_at_utc, i.started_at_utc) >= @from
+      AND COALESCE(i.ended_at_utc, i.started_at_utc) <  @to
+      AND (
+            @isAdmin = 1 OR @uid IS NULL OR
+            p.created_by_user_id = @uid
+          )
+)
+SELECT
+    ev.[date],
+    p.id AS patient_id,
+    p.first_name,
+    p.last_name1,
+    p.last_name2,
+    p.identification_number,
+    COUNT_BIG(*) AS contacts
+FROM RawEvents ev
+JOIN dbo.patients p ON p.id = ev.patient_id
+GROUP BY
+    ev.[date],
+    p.id,
+    p.first_name,
+    p.last_name1,
+    p.last_name2,
+    p.identification_number
+ORDER BY
+    ev.[date] DESC,
+    p.first_name,
+    p.last_name1;";
+
+            var details = new List<PatientsByPeriodDetailDto>();
+
+            await using var cn = new SqlConnection(_cs);
+            await cn.OpenAsync(ct);
+            await using var cmd = new SqlCommand(SQL, cn);
+
+            cmd.Parameters.AddWithValue("@from", fromUtc);
+            cmd.Parameters.AddWithValue("@to", toUtc);
+            cmd.Parameters.AddWithValue("@uid", (object?)clinicianUserId ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@isAdmin", isAdmin ? 1 : 0);
+
+            await using var rd = await cmd.ExecuteReaderAsync(ct);
+            while (await rd.ReadAsync(ct))
+            {
+                var date = rd.GetDateTime(0);
+                var patientId = rd.GetGuid(1);
+
+                details.Add(new PatientsByPeriodDetailDto
+                {
+                    Date = date,
+                    PatientId = patientId,
+                    FirstName = rd.IsDBNull(2) ? "" : rd.GetString(2),
+                    LastName1 = rd.IsDBNull(3) ? "" : rd.GetString(3),
+                    LastName2 = rd.IsDBNull(4) ? null : rd.GetString(4),
+                    IdentificationNumber = rd.IsDBNull(5) ? null : rd.GetString(5),
+                    ContactsCount = rd.IsDBNull(6) ? 0 : (int)rd.GetInt64(6),
+                });
+            }
+
+            var stats = new PatientsByPeriodStatsDto
+            {
+                Details = details
+            };
+
+            var totalContacts = 0;
+            var uniquePatients = new HashSet<Guid>();
+            var perDayPatients = new Dictionary<DateTime, HashSet<Guid>>();
+
+            foreach (var row in details)
+            {
+                totalContacts += row.ContactsCount;
+                uniquePatients.Add(row.PatientId);
+
+                var key = row.Date.Date;
+                if (!perDayPatients.TryGetValue(key, out var set))
+                {
+                    set = new HashSet<Guid>();
+                    perDayPatients[key] = set;
+                }
+                set.Add(row.PatientId);
+            }
+
+            stats.TotalContacts = totalContacts;
+            stats.TotalUniquePatients = uniquePatients.Count;
+
+            foreach (var kvp in perDayPatients.OrderBy(k => k.Key))
+            {
+                stats.Series.Add(new PatientsByPeriodBucketDto
+                {
+                    Date = kvp.Key,
+                    PatientsCount = kvp.Value.Count
+                });
+            }
+
+            return stats;
+        }
+
 
 
         public async Task<IReadOnlyList<PatientListItem>> ListRecentPatientsAsync(

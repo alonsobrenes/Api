@@ -21,7 +21,16 @@ namespace EPApi.DataAccess
             await conn.OpenAsync(ct);
 
             await using var cmd = conn.CreateCommand();
-            cmd.CommandText = @"SELECT TOP 1 Id, email, password_hash, role, created_at
+            cmd.CommandText = @"DECLARE @role VARCHAR(25)
+                                IF EXISTS(SELECT 1 FROM dbo.users (NOLOCK) WHERE email = @email AND role='admin') 
+                                  SET @role = 'admin'
+                                ELSE
+                                SELECT	@role =  CASE WHEN COUNT(*) = 1 THEN 'editor' ELSE 'viewer' END 
+                                FROM dbo.users u (NOLOCK) 
+                                   INNER JOIN dbo.org_members m (NOLOCK)
+	                                ON u.email = @email
+	                                   AND u.id = m.user_id
+                                SELECT TOP 1 Id, email, password_hash, @role, created_at
                                 FROM dbo.users WHERE email = @email";
             cmd.Parameters.Add(new SqlParameter("@email", SqlDbType.NVarChar, 100) { Value = email });
 

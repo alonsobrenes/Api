@@ -22,7 +22,7 @@ namespace EPApi.Services
             _expiry = expiry;            
         }
 
-        public string GenerateToken(User user, Guid? orgId = null, bool? isOwner = false)
+        public string GenerateToken(User user, Guid? orgId = null, bool? isOwner = false, OrgMode? orgMode = OrgMode.Solo)
         {
             var role = user.Role.ToLowerInvariant() == "admin" ? "admin" : (bool)isOwner ? user.Role.ToLowerInvariant() : "viewer";
 
@@ -34,6 +34,7 @@ namespace EPApi.Services
                 
                 new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
                 new Claim("role", user.Role ?? "viewer"),
+                new Claim(ClaimTypes.System, orgMode == OrgMode.Multi ? "multi" : "solo"),
             };
 
             if (orgId!=null)

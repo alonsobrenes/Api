@@ -102,5 +102,29 @@ namespace EPApi.Controllers
             var items = await _patients.GetPatientsByClinicianAsync(orgId, userId, ct);
             return Ok(new { items });
         }
+
+        // GET /api/clinician/patients/stats-by-period?from=...&to=...
+        [HttpGet("stats-by-period")]
+        public async Task<IActionResult> GetStatsByPeriod(
+            [FromQuery] DateTime from,
+            [FromQuery] DateTime to,
+            CancellationToken ct = default)
+        {
+            var orgId = RequireOrgId();
+            var userId = GetCurrentUserId();
+
+            var isOwner = await _orgAccess
+                .IsOwnerOfMultiSeatOrgAsync(userId, orgId, ct);
+
+            var stats = await _repo.GetPatientsByPeriodStatsAsync(
+                fromUtc: from,
+                toUtc: to,
+                clinicianUserId: userId,
+                isAdmin: isOwner,
+                ct: ct);
+
+            return Ok(stats);
+        }
+
     }
 }

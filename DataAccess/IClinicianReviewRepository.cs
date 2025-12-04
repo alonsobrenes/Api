@@ -55,6 +55,12 @@ namespace EPApi.DataAccess
 
         Task<AttemptAiBundle?> GetAttemptBundleForAiAsync(Guid attemptId, CancellationToken ct);
         Task<IReadOnlyList<TestBasicDto>> GetTestsForClinicianAsync(int userId, CancellationToken ct = default);
+        Task<PatientsByPeriodStatsDto> GetPatientsByPeriodStatsAsync(DateTime fromUtc, DateTime toUtc, int? clinicianUserId, bool isAdmin, CancellationToken ct = default);
+        Task<IReadOnlyList<ClinicianOrgPatientContactStatsDto>> GetOrgPatientsByProfessionalAsync(
+    Guid orgId,
+    DateTime fromUtc,
+    DateTime toUtc,
+    CancellationToken ct = default);
 
 
     }

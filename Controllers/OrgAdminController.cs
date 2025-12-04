@@ -1,5 +1,6 @@
 ﻿using EPApi.DataAccess;
 using EPApi.Services.Email;
+using EPApi.Services.Orgs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.SqlClient;
@@ -19,14 +20,18 @@ namespace EPApi.Controllers
         private readonly IHostEnvironment _env;
         private readonly IEmailSender _email;
         private readonly IOrgRepository _orgRepository;
+        private readonly IClinicianReviewRepository _reviewRepo;
+        private readonly IOrgAccessService _orgAccess;
 
-        public OrgAdminController(BillingRepository billingRepo, IConfiguration cfg, IHostEnvironment env, IEmailSender email, IOrgRepository orgRepository )
+        public OrgAdminController(BillingRepository billingRepo, IConfiguration cfg, IHostEnvironment env, IEmailSender email, IOrgRepository orgRepository, IClinicianReviewRepository reviewRepo, IOrgAccessService orgAccess)
         {
             _billingRepo = billingRepo;
             _cfg = cfg;
             _env = env;
             _email = email;
             _orgRepository = orgRepository;
+            _reviewRepo = reviewRepo;
+            _orgAccess = orgAccess;
         }
 
         public sealed record OrgSummaryDto(string planCode, string status, int seats, string kind);
@@ -108,6 +113,40 @@ namespace EPApi.Controllers
 
             return Ok(new OrgSummaryDto(planCode, status, seats, kind));
         }
+
+        // GET /api/orgs/patients-by-professional?from=...&to=...
+        [HttpGet("patients-by-professional")]
+        public async Task<IActionResult> GetPatientsByProfessional(
+            [FromQuery] DateTime from,
+            [FromQuery] DateTime to,
+            CancellationToken ct = default)
+        {
+            var orgTry = await TryGetOrgIdAsync(ct);
+            if (!orgTry.ok)
+                return Unauthorized(new { message = "Auth requerida o Billing:DevOrgId en Development." });
+
+            TryGetUserId(out var userId);
+
+            // Solo owner de clínica / hospital (multi-seat)
+            var isOwner = await _orgAccess.IsOwnerOfMultiSeatOrgAsync(userId, orgTry.orgId, ct);
+            if (!isOwner)
+            {
+                return Forbid();
+            }
+
+            // Normalizamos a UTC por si el controlador recibe DateTime Kind=Unspecified
+            var fromUtc = DateTime.SpecifyKind(from, DateTimeKind.Utc);
+            var toUtc = DateTime.SpecifyKind(to, DateTimeKind.Utc);
+
+            var list = await _reviewRepo.GetOrgPatientsByProfessionalAsync(
+                orgTry.orgId,
+                fromUtc,
+                toUtc,
+                ct);
+
+            return Ok(list);
+        }
+
 
         public sealed class MemberDto
         {

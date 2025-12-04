@@ -26,14 +26,18 @@ namespace EPApi.Services
             var user = await _users.FindByEmailAsync(email, ct);
             if (user is null) return null;
             if (!_hasher.Verify(password, user.PasswordHash)) return null;
+            
+            
             var orgId = await _billing.GetOrgIdForUserAsync(user.Id, ct);
             var isOwner = true;
+            var orgMode = OrgMode.Solo;
 
-            if (user.Role != "admin") { 
+            if (user.Role != "admin") {
+                orgMode = await _orgAccess.GetOrgModeAsync(orgId.Value, ct);
                 isOwner = await _orgAccess.IsOwnerAsync(user.Id);
             }
 
-            return _jwt.GenerateToken(user, orgId,isOwner);
+            return _jwt.GenerateToken(user, orgId,isOwner, orgMode);
         }
     }
 }
