@@ -156,6 +156,13 @@ namespace EPApi.Controllers
             public string? memberRole { get; set; }
             public DateTime createdAtUtc { get; set; }
             public string? avatarUrl { get; set; }
+            public string? firstName { get; set; }
+            public string? lastName1 { get; set; }
+            public string? lastName2 { get; set; }
+            public string? phone { get; set; }
+            public string? titlePrefix { get; set; }
+            public string? licenseNumber { get; set; }
+            public string? signatureImageUrl { get; set; }
         }
 
         [HttpGet("members")]
@@ -181,7 +188,14 @@ SELECT m.user_id,
        u.role       AS user_role,
        m.role       AS member_role,
        m.created_at_utc,
-       u.avatar_url
+       u.avatar_url,
+       u.first_name,
+       u.last_name1,
+       u.last_name2,
+       u.phone,
+       u.title_prefix,
+       u.license_number,
+       u.signature_image_url
 FROM dbo.org_members m
 JOIN dbo.users u ON u.id = m.user_id
 WHERE m.org_id = @org
@@ -201,6 +215,13 @@ ORDER BY u.email;";
                     memberRole = rd.IsDBNull(3) ? null : rd.GetString(3),
                     createdAtUtc = rd.GetDateTime(4),
                     avatarUrl = rd.IsDBNull(5) ? "" : rd.GetString(5),
+                    firstName = rd.IsDBNull(6) ? null : rd.GetString(6),
+                    lastName1 = rd.IsDBNull(7) ? null : rd.GetString(7),
+                    lastName2 = rd.IsDBNull(8) ? null : rd.GetString(8),
+                    phone = rd.IsDBNull(9) ? null : rd.GetString(9),
+                    titlePrefix = rd.IsDBNull(10) ? null : rd.GetString(10),
+                    licenseNumber = rd.IsDBNull(11) ? null : rd.GetString(11),
+                    signatureImageUrl = rd.IsDBNull(12) ? null : rd.GetString(12),
                 });
             }
 

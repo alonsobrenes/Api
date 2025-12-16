@@ -52,3 +52,7 @@ appsettings.*.json
 
 
 wwwroot/
+
+azurite-data/
+
+azurite*

@@ -95,5 +95,14 @@ namespace EPApi.Services.Storage
             var orgIdN = orgId.ToString("N");
             return $"core/orgs/{orgIdN}/branding/logo.png";
         }
+        /// <summary>
+        /// Firma manuscrita profesional de usuario (core, sin cuota).
+        ///   core/signatures/user/{userId}/signature.png
+        /// </summary>
+        public static string GetUserSignaturePath(int userId)
+        {
+            // Igual que avatar: usamos el int tal cual, sin GUID ni formato "N"
+            return $"core/signatures/user/{userId}/signature.png";
+        }
     }
 }
