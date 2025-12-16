@@ -33,20 +33,27 @@ namespace EPApi.Controllers
         }
 
         [HttpGet("me")]
-        public async Task<ActionResult<UserProfileDto>> GetMe(CancellationToken ct)
+        public async Task<ActionResult<User>> GetMe(CancellationToken ct)
         {
             var id = GetUserId();
             
             var user = await _repo.GetByIdAsync(id, ct);
             if (user is null) return NotFound();
 
-            return Ok(new UserProfileDto
+            return Ok(new User
             {
                 Id = user.Id,
                 Email = user.Email,
                 Role = user.Role,
                 CreatedAt = user.CreatedAt,
-                AvatarUrl = user.AvatarUrl
+                AvatarUrl = user.AvatarUrl,
+                FirstName = user.FirstName,
+                LastName1 = user.LastName1,
+                LastName2 = user.LastName2,
+                Phone = user.Phone,
+                TitlePrefix = user.TitlePrefix,
+                LicenseNumber = user.LicenseNumber,
+                SignatureImageUrl = user.SignatureImageUrl
             });
         }
 
@@ -102,12 +109,21 @@ namespace EPApi.Controllers
             return NotFound();
         }
 
+        [HttpGet("{id:int}/signature")]
+        public async Task<IActionResult> GetSignature(int id, CancellationToken ct)
+        {
+            var storageKey = StoragePathHelper.GetUserSignaturePath(id);
+            var stream = await _fileStorage.OpenReadAsync(storageKey, ct);
 
+            if (stream is null)
+                return NotFound();
 
-        // Subir/actualizar avatar (multipart/form-data, image/*)
+            return File(stream, "image/png");
+        }
+
         [HttpPost("me/avatar")]
         [RequestSizeLimit(5_000_000)] // 5 MB
-        public async Task<ActionResult<UserProfileDto>> UploadAvatar([FromForm] IFormFile file, CancellationToken ct)
+        public async Task<ActionResult<User>> UploadAvatar([FromForm] IFormFile file, CancellationToken ct)
         {
             if (file == null || file.Length == 0) return BadRequest("Archivo vacío.");
 
@@ -147,13 +163,14 @@ namespace EPApi.Controllers
             var me = await _repo.GetByIdAsync(id, ct);
             if (me is null) return NotFound();
 
-            return Ok(new UserProfileDto
+            return Ok(new User
             {
                 Id = me.Id,
                 Email = me.Email,
                 Role = me.Role,
                 CreatedAt = me.CreatedAt,
-                AvatarUrl = me.AvatarUrl
+                AvatarUrl = me.AvatarUrl,
+                SignatureImageUrl = me.SignatureImageUrl,
             });     
         }
         
@@ -188,6 +205,119 @@ namespace EPApi.Controllers
 
                 await _repo.UpdateAvatarUrlAsync(id, null, ct);
             return NoContent();
-        }       
+        }
+
+        [HttpDelete("me/signature")]
+        public async Task<ActionResult> DeleteSignature(CancellationToken ct)
+        {
+            var id = GetUserId();
+            var user = await _repo.GetByIdAsync(id, ct);
+            if (user is null) return NotFound();
+
+            // Borrar archivo físico en storage
+            var storageKey = StoragePathHelper.GetUserSignaturePath(id);
+            try
+            {
+                await _fileStorage.DeleteAsync(storageKey, ct);
+            }
+            catch
+            {
+                // ignoramos errores de storage
+            }
+
+            await _repo.UpdateSignatureImageUrlAsync(id, null, ct);
+
+            return NoContent();
+        }
+
+
+        public sealed class UploadSignatureRequest
+        {
+            public string DataUrl { get; set; } = string.Empty; // data:image/png;base64,...
+        }
+
+        private static byte[] DecodePngDataUrl(string dataUrl)
+        {
+            if (string.IsNullOrWhiteSpace(dataUrl))
+                throw new ArgumentException("Signature data URL is empty.", nameof(dataUrl));
+
+            // Aceptamos cualquier data:image/*; buscamos el "base64,"
+            var idx = dataUrl.IndexOf("base64,", StringComparison.OrdinalIgnoreCase);
+            if (idx < 0)
+                throw new InvalidOperationException("Signature data URL is not a valid base64 data URI.");
+
+            var base64 = dataUrl.Substring(idx + "base64,".Length);
+            return Convert.FromBase64String(base64);
+        }
+
+        [HttpPost("me/signature")]
+        public async Task<ActionResult<User>> UploadSignature([FromBody] UploadSignatureRequest body, CancellationToken ct)
+        {
+            if (body is null || string.IsNullOrWhiteSpace(body.DataUrl))
+                return BadRequest("La firma (dataUrl) es requerida.");
+
+            var id = GetUserId();
+
+            byte[] pngBytes;
+            try
+            {
+                pngBytes = DecodePngDataUrl(body.DataUrl);
+            }
+            catch
+            {
+                return BadRequest("La firma no tiene un formato PNG base64 válido.");
+            }
+
+            var storageKey = StoragePathHelper.GetUserSignaturePath(id);
+
+            await using (var ms = new MemoryStream(pngBytes))
+            {
+                ms.Position = 0;
+                await _fileStorage.SaveAsync(storageKey, ms, ct);
+            }
+
+            // Public URL tipo avatar (cache-busting con rev)
+            var rev = Guid.NewGuid().ToString("N");
+            var publicUrl = $"/api/users/{id}/signature?rev={rev}";
+
+            var ok = await _repo.UpdateSignatureImageUrlAsync(id, publicUrl, ct);
+            if (!ok) return Problem("No se pudo actualizar la firma profesional.");
+
+            var me = await _repo.GetByIdAsync(id, ct);
+            if (me is null) return NotFound();
+
+            return Ok(new User
+            {
+                Id = me.Id,
+                Email = me.Email,
+                Role = me.Role ?? string.Empty,
+                CreatedAt = me.CreatedAt,
+                AvatarUrl = me.AvatarUrl,
+                SignatureImageUrl = me.SignatureImageUrl
+            });
+        }
+
+        [HttpPut("me")]
+        public async Task<IActionResult> UpdateMe(
+    [FromBody] UpdateUserProfileRequest body,
+    CancellationToken ct = default)
+        {
+            var userId = GetUserId();
+
+            await _repo.UpdateProfileAsync(
+                userId,
+                body.FirstName,
+                body.LastName1,
+                body.LastName2,
+                body.Phone,
+                body.TitlePrefix,
+                body.LicenseNumber,
+                signatureImageUrl: null,  // de momento no cambiamos la firma aquí
+                ct);
+
+            var dto = await _repo.GetByIdAsync(userId, ct); // o similar
+            return Ok(dto);
+        }
+
     }
 }
