@@ -147,6 +147,35 @@ namespace EPApi.Controllers
             return Ok(list);
         }
 
+        // GET /api/orgs/patients-by-professional/stats?from=...&to=...
+        [HttpGet("patients-by-professional/stats")]
+        public async Task<IActionResult> GetPatientsByProfessionalStats(
+            [FromQuery] DateTime from,
+            [FromQuery] DateTime to,
+            CancellationToken ct = default)
+        {
+            var orgTry = await TryGetOrgIdAsync(ct);
+            if (!orgTry.ok)
+                return Unauthorized(new { message = "Auth requerida o Billing:DevOrgId en Development." });
+
+            TryGetUserId(out var userId);
+
+            var isOwner = await _orgAccess.IsOwnerOfMultiSeatOrgAsync(userId, orgTry.orgId, ct);
+            if (!isOwner)
+                return Forbid();
+
+            var fromUtc = DateTime.SpecifyKind(from, DateTimeKind.Utc);
+            var toUtc = DateTime.SpecifyKind(to, DateTimeKind.Utc);
+
+            var stats = await _reviewRepo.GetOrgPatientsByProfessionalStatsAsync(
+                orgTry.orgId,
+                fromUtc,
+                toUtc,
+                ct);
+
+            return Ok(stats);
+        }
+
 
         public sealed class MemberDto
         {

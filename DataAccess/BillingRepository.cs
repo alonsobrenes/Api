@@ -27,6 +27,38 @@ namespace EPApi.DataAccess
         public async Task<Guid?> GetOrgIdForUserAsync(int userId, CancellationToken ct = default)
         {
             const string sql = @"SELECT TOP (1) org_id FROM dbo.org_members WHERE user_id = @uid;";
+//            const string sql = @"SELECT   TOP 1 org_id
+//FROM dbo.org_members
+//WHERE user_id = @uid
+//  AND disabled_at_utc IS NULL
+//ORDER BY
+//  CASE WHEN role = 'owner' THEN 1 ELSE 0 END,
+//created_at_utc ASC;";
+
+            await using var cn = new SqlConnection(_cs);
+            await cn.OpenAsync(ct);
+
+            await using var cmd = new SqlCommand(sql, cn);
+            cmd.Parameters.Add(new SqlParameter("@uid", SqlDbType.Int) { Value = userId });
+
+            var o = await cmd.ExecuteScalarAsync(ct);
+            if (o is null || o == DBNull.Value) return null;
+            if (o is Guid g) return g;
+            return (Guid?)o;
+        }
+
+        /// <summary>
+        /// Devuelve la primera organización (org_id) a la que pertenece el usuario, o null si no está asignado.
+        /// </summary>
+        public async Task<Guid?> GetOrgIdForUserMemberAsync(int userId, CancellationToken ct = default)
+        {
+            const string sql = @"SELECT   TOP 1 org_id
+FROM dbo.org_members
+WHERE user_id = @uid
+  AND disabled_at_utc IS NULL
+ORDER BY
+  CASE WHEN role = 'owner' THEN 1 ELSE 0 END,
+created_at_utc ASC;";
 
             await using var cn = new SqlConnection(_cs);
             await cn.OpenAsync(ct);

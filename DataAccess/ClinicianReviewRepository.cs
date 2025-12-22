@@ -388,6 +388,209 @@ VALUES (@rid, @areas, @inter, @estr, @imp, @aj, @mad, @real, @expr);";
             }
         }
 
+        public async Task<OrgPatientsByProfessionalStatsResponseDto> GetOrgPatientsByProfessionalStatsAsync(
+    Guid orgId,
+    DateTime fromUtc,
+    DateTime toUtc,
+    CancellationToken ct = default)
+        {
+            const string SQL = @"
+-- 0) Materializar eventos filtrados en tabla temporal
+IF OBJECT_ID('tempdb..#ev') IS NOT NULL DROP TABLE #ev;
+
+CREATE TABLE #ev (
+  [date] date NOT NULL,
+  patient_id uniqueidentifier NOT NULL,
+  clinician_user_id int NOT NULL,
+  kind nvarchar(16) NOT NULL
+);
+
+INSERT INTO #ev ([date], patient_id, clinician_user_id, kind)
+SELECT [date], patient_id, clinician_user_id, kind
+FROM (
+  -- Tests aplicados
+  SELECT
+      CAST(COALESCE(a.completed_at, a.updated_at, a.started_at, a.created_at) AS date) AS [date],
+      a.patient_id,
+      a.assigned_by_user_id AS clinician_user_id,
+      N'test' AS kind
+  FROM dbo.test_attempts a
+  INNER JOIN dbo.patients p ON p.id = a.patient_id
+  WHERE a.status IN (N'reviewed', N'auto_done', N'finished')
+    AND COALESCE(a.completed_at, a.updated_at, a.started_at, a.created_at) >= @from
+    AND COALESCE(a.completed_at, a.updated_at, a.started_at, a.created_at) <  @to
+    AND a.assigned_by_user_id IS NOT NULL
+
+  UNION ALL
+
+  -- Sesiones clínicas (org-scoped)
+  SELECT
+      CAST(COALESCE(s.updated_at_utc, s.created_at_utc) AS date) AS [date],
+      s.patient_id,
+      s.created_by_user_id AS clinician_user_id,
+      N'session' AS kind
+  FROM dbo.patient_sessions s
+  INNER JOIN dbo.patients p ON p.id = s.patient_id
+  WHERE s.org_id = @orgId
+    AND s.deleted_at_utc IS NULL
+    AND COALESCE(s.updated_at_utc, s.created_at_utc) >= @from
+    AND COALESCE(s.updated_at_utc, s.created_at_utc) <  @to
+    AND s.created_by_user_id IS NOT NULL
+
+  UNION ALL
+
+  -- Entrevistas
+  SELECT
+      CAST(COALESCE(i.ended_at_utc, i.started_at_utc) AS date) AS [date],
+      i.patient_id,
+      i.clinician_user_id AS clinician_user_id,
+      N'interview' AS kind
+  FROM dbo.interviews i
+  INNER JOIN dbo.patients p ON p.id = i.patient_id
+  WHERE COALESCE(i.ended_at_utc, i.started_at_utc) >= @from
+    AND COALESCE(i.ended_at_utc, i.started_at_utc) <  @to
+    AND i.clinician_user_id IS NOT NULL
+) x
+INNER JOIN dbo.org_members m
+  ON m.user_id = x.clinician_user_id
+ AND m.org_id = @orgId
+ AND m.disabled_at_utc IS NULL;
+
+-- 1) DETAILS (tabla)
+WITH AggDetails AS (
+  SELECT
+    clinician_user_id,
+    patient_id,
+    COUNT_BIG(*) AS contacts,
+    SUM(CASE WHEN kind = N'test' THEN 1 ELSE 0 END)       AS tests,
+    SUM(CASE WHEN kind = N'session' THEN 1 ELSE 0 END)    AS sessions,
+    SUM(CASE WHEN kind = N'interview' THEN 1 ELSE 0 END)  AS interviews,
+    date
+  FROM #ev
+  GROUP BY clinician_user_id, patient_id,date
+)
+SELECT
+  u.id            AS clinician_user_id,
+  u.email         AS clinician_email,
+
+  p.id            AS patient_id,
+  p.first_name    AS patient_first_name,
+  p.last_name1    AS patient_last_name1,
+  p.last_name2    AS patient_last_name2,
+  p.contact_email AS patient_email,
+  d.date,
+  p.identification_number,
+  d.contacts      AS contacts_count,
+  d.tests         AS tests_count,
+  d.sessions      AS sessions_count,
+  d.interviews    AS interviews_count,
+  u.first_name + ' ' + u.last_name1 + ' ' + ISNULL(u.last_name2,'') clinician_fullname
+FROM AggDetails d
+INNER JOIN dbo.users u ON u.id = d.clinician_user_id
+INNER JOIN dbo.patients p ON p.id = d.patient_id
+ORDER BY u.email, p.first_name, p.last_name1;
+
+-- 2) SERIES (grafico)
+WITH AggSeries AS (
+  SELECT
+    clinician_user_id,
+    COUNT_BIG(*) AS contacts,
+    COUNT(DISTINCT patient_id) AS patients,
+    SUM(CASE WHEN kind = N'test' THEN 1 ELSE 0 END)       AS tests,
+    SUM(CASE WHEN kind = N'session' THEN 1 ELSE 0 END)    AS sessions,
+    SUM(CASE WHEN kind = N'interview' THEN 1 ELSE 0 END)  AS interviews,
+    date
+  FROM #ev
+  GROUP BY [date], clinician_user_id
+)
+SELECT
+  s.[date],
+  u.id    AS clinician_user_id,
+  u.email AS clinician_email,
+  u.first_name + ' ' + u.last_name1 + ' ' + ISNULL(u.last_name2,'') clinician_fullname,
+  s.patients   AS patients_count,
+  s.contacts   AS contacts_count,
+  s.tests      AS tests_count,
+  s.sessions   AS sessions_count,
+  s.interviews AS interviews_count
+FROM AggSeries s
+INNER JOIN dbo.users u ON u.id = s.clinician_user_id
+ORDER BY s.[date] ASC, u.email ASC;
+
+-- 3) TOTALS (KPIs)
+SELECT
+  CAST(COALESCE(COUNT_BIG(*), 0) AS int) AS total_contacts,
+  CAST(COALESCE(COUNT(DISTINCT patient_id), 0) AS int) AS total_unique_patients
+FROM #ev;
+
+";
+
+            var dto = new OrgPatientsByProfessionalStatsResponseDto();
+
+            await using var cn = new SqlConnection(_cs);
+            await cn.OpenAsync(ct);
+            await using var cmd = new SqlCommand(SQL, cn);
+
+            cmd.Parameters.AddWithValue("@orgId", orgId);
+            cmd.Parameters.AddWithValue("@from", fromUtc);
+            cmd.Parameters.AddWithValue("@to", toUtc);
+
+            await using var rd = await cmd.ExecuteReaderAsync(ct);
+
+            // 1) Details
+            while (await rd.ReadAsync(ct))
+            {
+                dto.Details.Add(new ClinicianOrgPatientContactStatsDto
+                {
+                    ClinicianUserId = rd.GetInt32(0),
+                    ClinicianEmail = rd.IsDBNull(1) ? "" : rd.GetString(1),
+                    
+                    PatientId = rd.GetGuid(2),
+                    PatientFirstName = rd.IsDBNull(3) ? "" : rd.GetString(3),
+                    PatientLastName1 = rd.IsDBNull(4) ? "" : rd.GetString(4),
+                    PatientLastName2 = rd.IsDBNull(5) ? "" : rd.GetString(5),
+                    PatientEmail = rd.IsDBNull(6) ? null : rd.GetString(6),
+                    Date = rd.IsDBNull(7) ? null : rd.GetDateTime(7).ToString(),
+                    IdentificationNumber = rd.IsDBNull(8) ? "" : rd.GetString(8),
+                    ContactsCount = rd.IsDBNull(9) ? 0 : (int)rd.GetInt64(9),
+                    TestsCount = rd.IsDBNull(10) ? 0 : rd.GetInt32(10),
+                    SessionsCount = rd.IsDBNull(11) ? 0 : rd.GetInt32(11),
+                    InterviewsCount = rd.IsDBNull(12) ? 0 : rd.GetInt32(12),
+                    ClinicianFullName = rd.IsDBNull(13) ? "" : rd.GetString(13),
+                });
+            }
+
+            // 2) Series
+            if (await rd.NextResultAsync(ct))
+            {
+                while (await rd.ReadAsync(ct))
+                {
+                    dto.Series.Add(new ClinicianOrgPatientsByProfessionalSeriesPointDto
+                    {
+                        Date = rd.GetDateTime(0),
+                        ClinicianUserId = rd.GetInt32(1),
+                        ClinicianEmail = rd.IsDBNull(2) ? "" : rd.GetString(2),
+                        ClinicianFullName = rd.IsDBNull(3) ? "" : rd.GetString(3),
+                        PatientsCount = rd.IsDBNull(4) ? 0 : (int)rd.GetInt32(4),
+                        ContactsCount = rd.IsDBNull(5) ? 0 : (int)rd.GetInt64(5),
+
+                        TestsCount = rd.IsDBNull(6) ? 0 : rd.GetInt32(6),
+                        SessionsCount = rd.IsDBNull(7) ? 0 : rd.GetInt32(7),
+                        InterviewsCount = rd.IsDBNull(8) ? 0 : rd.GetInt32(8),
+                    });
+                }
+            }
+
+            // 3) Totals
+            if (await rd.NextResultAsync(ct) && await rd.ReadAsync(ct))
+            {
+                dto.TotalContacts = rd.IsDBNull(0) ? 0 : rd.GetInt32(0);
+                dto.TotalUniquePatients = rd.IsDBNull(1) ? 0 : rd.GetInt32(1);
+            }
+
+            return dto;
+        }
+
         public async Task<IReadOnlyList<ClinicianOrgPatientContactStatsDto>> GetOrgPatientsByProfessionalAsync(
     Guid orgId,
     DateTime fromUtc,
@@ -466,7 +669,8 @@ SELECT
     Agg.contacts      AS contacts_count,
     Agg.tests         AS tests_count,
     Agg.sessions      AS sessions_count,
-    Agg.interviews    AS interviews_count
+    Agg.interviews    AS interviews_count,
+    u.first_name + ' ' + u.last_name1 + ' ' + u.ISNULL(last_name2,'')-
 FROM Agg
   INNER JOIN dbo.org_members m
       ON m.user_id = Agg.clinician_user_id
@@ -504,12 +708,13 @@ ORDER BY
                         PatientId = rd.GetGuid(2),
                         PatientFirstName = rd.GetString(3),
                         PatientLastName1 = rd.GetString(4),
-                        PatientLastName2 = rd.GetString(5),
-                        PatientEmail = rd.GetString(6),
+                        PatientLastName2 = rd.IsDBNull(5) ? null : rd.GetString(5),
+                        PatientEmail = rd.IsDBNull(6) ? null : rd.GetString(6),
                         ContactsCount= rd.IsDBNull(7) ? 0 : (int)rd.GetInt64(7),
                         TestsCount = rd.IsDBNull(8) ? 0 : (int)rd.GetInt32(8),
                         SessionsCount =rd.IsDBNull(9) ? 0 : (int)rd.GetInt32(9),
                         InterviewsCount =rd.IsDBNull(10) ? 0 : (int)rd.GetInt32(10),
+                        ClinicianFullName = rd.GetString(11),
                     };
 
                     result.Add(dto);

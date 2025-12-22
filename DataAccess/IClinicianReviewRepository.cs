@@ -62,6 +62,10 @@ namespace EPApi.DataAccess
     DateTime toUtc,
     CancellationToken ct = default);
 
-
+        Task<OrgPatientsByProfessionalStatsResponseDto> GetOrgPatientsByProfessionalStatsAsync(
+    Guid orgId,
+    DateTime fromUtc,
+    DateTime toUtc,
+    CancellationToken ct = default);
     }
 }
