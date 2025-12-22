@@ -55,14 +55,6 @@ namespace EPApi.Controllers
             return uid;
         }
 
-        private async Task<Guid> RequireOrgIdAsync(CancellationToken ct)
-        {
-            var uid = RequireUserId();
-            var org = await _billing.GetOrgIdForUserAsync(uid, ct);
-            if (org is null) throw new InvalidOperationException("Usuario sin organización");
-            return org.Value;
-        }
-
         /// <summary>
         /// List sessions for a patient within current org. Optional text filter and author filter.
         /// </summary>
@@ -75,13 +67,14 @@ namespace EPApi.Controllers
             [FromQuery] int? createdByUserId = null,
             CancellationToken ct = default)
         {
-            var orgId = GetOrgIdOrThrow();
+            
             var userId = RequireUserId();
+            var orgId = await _billing.GetOrgIdForUserMemberAsync(userId, ct);
 
             var isOwner = await _orgAccess
-            .IsOwnerOfMultiSeatOrgAsync(userId, orgId, ct);
+            .IsOwnerOfMultiSeatOrgAsync(userId, orgId.Value, ct);
 
-            var result = await _repo.ListAsync(orgId, patientId, skip, take, q, createdByUserId, isOwner, ct);
+            var result = await _repo.ListAsync(orgId.Value, patientId, skip, take, q, userId, isOwner, ct);
             return Ok(result);
         }
 
@@ -89,8 +82,9 @@ namespace EPApi.Controllers
         [HttpGet("{id:guid}")]
         public async Task<ActionResult<PatientSessionDto>> Get(Guid patientId, Guid id, CancellationToken ct)
         {
-            var orgId = GetOrgIdOrThrow();
-            var dto = await _repo.GetAsync(orgId, patientId, id, ct);
+            var userId = RequireUserId();
+            var orgId = await _billing.GetOrgIdForUserMemberAsync(userId, ct);
+            var dto = await _repo.GetAsync(orgId.Value, patientId, id, ct);
             return Ok(dto);
         }
 
@@ -105,13 +99,14 @@ namespace EPApi.Controllers
             if (string.IsNullOrWhiteSpace(body.Title) || body.Title.Length > 200)
                 return BadRequest("Title is required (1-200 chars).");
 
-            var orgId = GetOrgIdOrThrow();
+            
             var userId = await GetUserIdOrResolveAsync(ct);
+            var orgId = await _billing.GetOrgIdForUserMemberAsync(userId, ct);
 
-            var created = await _repo.CreateAsync(orgId, patientId, userId, body.Title.Trim(), body.ContentText, ct);
+            var created = await _repo.CreateAsync(orgId.Value, patientId, userId, body.Title.Trim(), body.ContentText, ct);
 
             if (!string.IsNullOrWhiteSpace(body.ContentText))
-                await _hashtag.ExtractAndPersistAsync(orgId, "session", created.Id, body.ContentText, 5, ct);
+                await _hashtag.ExtractAndPersistAsync(orgId.Value, "session", created.Id, body.ContentText, 5, ct);
 
 
             return CreatedAtAction(nameof(Get), new { patientId, id = created.Id }, created);
@@ -124,10 +119,11 @@ namespace EPApi.Controllers
             if (string.IsNullOrWhiteSpace(body.Title) || body.Title.Length > 200)
                 return BadRequest("Title is required (1-200 chars).");
 
-            var orgId = GetOrgIdOrThrow();
-            var updated = await _repo.UpdateAsync(orgId, patientId, id, body.Title.Trim(), body.ContentText, ct);
+            var userId = RequireUserId();
+            var orgId = await _billing.GetOrgIdForUserMemberAsync(userId, ct);
+            var updated = await _repo.UpdateAsync(orgId.Value, patientId, id, body.Title.Trim(), body.ContentText, ct);
 
-            await _hashtag.ExtractAndPersistAsync(orgId, "session", id, body.ContentText ?? updated.ContentText, 5, ct);
+            await _hashtag.ExtractAndPersistAsync(orgId.Value, "session", id, body.ContentText ?? updated.ContentText, 5, ct);
 
             return Ok(updated);
         }
@@ -136,8 +132,9 @@ namespace EPApi.Controllers
         [HttpDelete("{id:guid}")]
         public async Task<IActionResult> Delete(Guid patientId, Guid id, CancellationToken ct)
         {
-            var orgId = GetOrgIdOrThrow();
-            await _repo.SoftDeleteAsync(orgId, patientId, id, ct);
+            var userId = RequireUserId();
+            var orgId = await _billing.GetOrgIdForUserMemberAsync(userId, ct);
+            await _repo.SoftDeleteAsync(orgId.Value, patientId, id, ct);
             return NoContent();
         }
 
@@ -145,9 +142,10 @@ namespace EPApi.Controllers
         [HttpPost("{id:guid}/ai-tidy")]
         public async Task<ActionResult<PatientSessionDto>> AiTidy(Guid patientId, Guid id, [FromBody] UpsertAiTextRequest body, CancellationToken ct)
         {
-            var orgId = GetOrgIdOrThrow();
-            var updated = await _repo.UpdateAiTidyAsync(orgId, patientId, id, body?.Text, ct);
-            await _hashtag.ExtractAndPersistAsync(orgId, "session_tidy", id, updated.AiTidyText ?? body?.Text, 5, ct);
+            var userId = RequireUserId();
+            var orgId = await _billing.GetOrgIdForUserMemberAsync(userId, ct);
+            var updated = await _repo.UpdateAiTidyAsync(orgId.Value, patientId, id, body?.Text, ct);
+            await _hashtag.ExtractAndPersistAsync(orgId.Value, "session_tidy", id, updated.AiTidyText ?? body?.Text, 5, ct);
 
             return Ok(updated);
         }
@@ -156,9 +154,10 @@ namespace EPApi.Controllers
         [HttpPost("{id:guid}/ai-opinion")]
         public async Task<ActionResult<PatientSessionDto>> AiOpinion(Guid patientId, Guid id, [FromBody] UpsertAiTextRequest body, CancellationToken ct)
         {
-            var orgId = GetOrgIdOrThrow();
-            var updated = await _repo.UpdateAiOpinionAsync(orgId, patientId, id, body?.Text, ct);
-            await _hashtag.ExtractAndPersistAsync(orgId, "session_opinion", id, updated.AiOpinionText ?? body?.Text, 5, ct);
+            var userId = RequireUserId();
+            var orgId = await _billing.GetOrgIdForUserMemberAsync(userId, ct);
+            var updated = await _repo.UpdateAiOpinionAsync(orgId.Value, patientId, id, body?.Text, ct);
+            await _hashtag.ExtractAndPersistAsync(orgId.Value, "session_opinion", id, updated.AiOpinionText ?? body?.Text, 5, ct);
 
             return Ok(updated);
         }
@@ -167,10 +166,11 @@ namespace EPApi.Controllers
         [HttpPost("{id:guid}/ai-tidy/auto")]
         public async Task<ActionResult<PatientSessionDto>> GenerateAiTidy(Guid patientId, Guid id, CancellationToken ct)
         {
-            var orgId = GetOrgIdOrThrow();
+            var userId = RequireUserId();
+            var orgId = await _billing.GetOrgIdForUserMemberAsync(userId, ct);
 
             // 1) Cargar la sesión para obtener el texto base
-            var dto = await _repo.GetAsync(orgId, patientId, id, ct);
+            var dto = await _repo.GetAsync(orgId.Value, patientId, id, ct);
             var source = dto?.ContentText?.Trim();
             if (string.IsNullOrWhiteSpace(source))
                 return BadRequest(new { message = "No hay contenido base (content_text) para ordenar." });
@@ -199,13 +199,13 @@ namespace EPApi.Controllers
             tokens = Math.Max(tokens, 1);
 
 
-            var gate = await _usage.TryConsumeAsync(orgId, "ai.credits.monthly", tokens, $"session-tidy:{id}:{inputHash}", ct);
+            var gate = await _usage.TryConsumeAsync(orgId.Value, "ai.credits.monthly", tokens, $"session-tidy:{id}:{inputHash}", ct);
             if (!gate.Allowed)
                 return Problem(statusCode: 402, title: "Límite del plan",
                     detail: "Has alcanzado el límite mensual para esta función de tu plan.");
 
             // 5) Guardar resultado
-            var updated = await _repo.UpdateAiTidyAsync(orgId, patientId, id, ai.Text, ct);
+            var updated = await _repo.UpdateAiTidyAsync(orgId.Value, patientId, id, ai.Text, ct);
             return Ok(updated);
         }
 
@@ -213,10 +213,11 @@ namespace EPApi.Controllers
         [HttpPost("{id:guid}/ai-opinion/auto")]
         public async Task<ActionResult<PatientSessionDto>> GenerateAiOpinion(Guid patientId, Guid id, CancellationToken ct)
         {
-            var orgId = GetOrgIdOrThrow();
+            var userId = RequireUserId();
+            var orgId = await _billing.GetOrgIdForUserMemberAsync(userId, ct);
 
             // 1) Cargar la sesión (usaremos el content_text como contexto mínimo)
-            var dto = await _repo.GetAsync(orgId, patientId, id, ct);
+            var dto = await _repo.GetAsync(orgId.Value, patientId, id, ct);
             var source = dto?.ContentText?.Trim();
             if (string.IsNullOrWhiteSpace(source))
                 return BadRequest(new { message = "No hay contenido base (content_text) para opinión." });
@@ -243,13 +244,13 @@ namespace EPApi.Controllers
             var tokens = ai.TotalTokens ?? ((ai.PromptTokens ?? 0) + (ai.CompletionTokens ?? 0));
             tokens = Math.Max(tokens, 1);
 
-            var gate = await _usage.TryConsumeAsync(orgId, "ai.credits.monthly", tokens, $"session-opinion:{id}:{inputHash}", ct);
+            var gate = await _usage.TryConsumeAsync(orgId.Value, "ai.credits.monthly", tokens, $"session-opinion:{id}:{inputHash}", ct);
             if (!gate.Allowed)
                 return Problem(statusCode: 402, title: "Límite del plan",
                     detail: "Has alcanzado el límite mensual para esta función de tu plan.");
 
 
-            var updated = await _repo.UpdateAiOpinionAsync(orgId, patientId, id, ai.Text, ct);
+            var updated = await _repo.UpdateAiOpinionAsync(orgId.Value, patientId, id, ai.Text, ct);
             return Ok(updated);
         }
 
@@ -257,12 +258,13 @@ namespace EPApi.Controllers
         [HttpGet("ai-quotas")]
         public async Task<ActionResult<object>> GetAiQuotas(Guid patientId, CancellationToken ct)
         {
-            var orgId = GetOrgIdOrThrow();
-            var (start, end) = await _usage.GetCurrentPeriodUtcAsync(orgId, ct);        // periodo vigente
+            var userId = RequireUserId();
+            var orgId = await _billing.GetOrgIdForUserMemberAsync(userId, ct);
+            var (start, end) = await _usage.GetCurrentPeriodUtcAsync(orgId.Value, ct);        // periodo vigente
             var code = "ai.credits.monthly";
 
-            var limit = await _usage.GetLimitAsync(orgId, code, ct);                     // null = ilimitado
-            var used = await _billing.GetUsageForPeriodAsync(orgId, code, start, end, ct); // 0 si no hay fila
+            var limit = await _usage.GetLimitAsync(orgId.Value, code, ct);                     // null = ilimitado
+            var used = await _billing.GetUsageForPeriodAsync(orgId.Value, code, start, end, ct); // 0 si no hay fila
             var remaining = limit.HasValue ? Math.Max(0, limit.Value - used) : int.MaxValue;
 
             return Ok(new
@@ -285,23 +287,24 @@ namespace EPApi.Controllers
         [HttpGet("{id:guid}/export")]
         public async Task<IActionResult> Export(Guid patientId, Guid id, CancellationToken ct)
         {
-            var orgId = GetOrgIdOrThrow();
-            var txt = await _repo.ExportPlainTextAsync(orgId, patientId, id, ct);
+            var userId = RequireUserId();
+            var orgId = await _billing.GetOrgIdForUserMemberAsync(userId, ct);
+            var txt = await _repo.ExportPlainTextAsync(orgId.Value, patientId, id, ct);
             var bytes = Encoding.UTF8.GetBytes(txt);
             return File(bytes, "text/plain", $"session-{id}.txt");
         }
 
         // --- helpers ---------------------------------------------------------
-        private Guid GetOrgIdOrThrow()
-        {
-            var claim = User.FindFirst("org_id")?.Value;
-            if (Guid.TryParse(claim, out var gid)) return gid;
+        //private Guid GetOrgIdOrThrow()
+        //{
+        //    var claim = User.FindFirst("org_id")?.Value;
+        //    if (Guid.TryParse(claim, out var gid)) return gid;
 
-            var header = Request.Headers["X-Org-Id"].FirstOrDefault();
-            if (Guid.TryParse(header, out gid)) return gid;
+        //    var header = Request.Headers["X-Org-Id"].FirstOrDefault();
+        //    if (Guid.TryParse(header, out gid)) return gid;
 
-            throw new InvalidOperationException("Missing org_id (claim or X-Org-Id header).");
-        }
+        //    throw new InvalidOperationException("Missing org_id (claim or X-Org-Id header).");
+        //}
 
         private async Task<int> GetUserIdOrResolveAsync(CancellationToken ct)
         {
